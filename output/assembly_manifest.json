@@ -1,0 +1,100 @@
+{
+  "name": "mux_2to1",
+  "parts": {
+    "housing_front": {
+      "file": {
+        "stl": "parts/housing_front.stl",
+        "step": "parts/housing_front.step"
+      }
+    },
+    "housing_back": {
+      "file": {
+        "stl": "parts/housing_back.stl",
+        "step": "parts/housing_back.step"
+      }
+    },
+    "gear_a": {
+      "file": {
+        "stl": "parts/gear_a.stl",
+        "step": "parts/gear_a.step"
+      }
+    },
+    "gear_b": {
+      "file": {
+        "stl": "parts/gear_b.stl",
+        "step": "parts/gear_b.step"
+      }
+    },
+    "dog_clutch": {
+      "file": {
+        "stl": "parts/dog_clutch.stl",
+        "step": "parts/dog_clutch.step"
+      }
+    },
+    "axle_main": {
+      "file": {
+        "stl": "parts/axle_main.stl",
+        "step": "parts/axle_main.step"
+      }
+    },
+    "lever": {
+      "file": {
+        "stl": "parts/lever.stl",
+        "step": "parts/lever.step"
+      }
+    },
+    "bevel_driving": {
+      "file": {
+        "stl": "parts/bevel_driving.stl",
+        "step": "parts/bevel_driving.step"
+      }
+    },
+    "axle_s": {
+      "file": {
+        "stl": "parts/axle_s.stl",
+        "step": "parts/axle_s.step"
+      }
+    },
+    "bevel_driven": {
+      "file": {
+        "stl": "parts/bevel_driven.stl",
+        "step": "parts/bevel_driven.step"
+      }
+    },
+    "lever_pivot": {
+      "file": {
+        "stl": "parts/lever_pivot.stl",
+        "step": "parts/lever_pivot.step"
+      }
+    },
+    "flexure_block": {
+      "file": {
+        "stl": "parts/flexure_block.stl",
+        "step": "parts/flexure_block.step"
+      }
+    }
+  },
+  "coordinate_frame": {
+    "origin": [
+      0,
+      0,
+      0
+    ],
+    "x_axis": [
+      1,
+      0,
+      0
+    ],
+    "y_axis": [
+      0,
+      1,
+      0
+    ],
+    "z_axis": [
+      0,
+      0,
+      1
+    ],
+    "units": "mm"
+  }
+}
