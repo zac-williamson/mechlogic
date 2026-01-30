@@ -1,0 +1,47 @@
+# 2:1 Multiplexer Logic Element
+# O = (S==0) ? A : B
+# Rotational encoding: clockwise = 0, counterclockwise = 1
+
+element:
+  name: "mux_2to1"
+  type: "mux"
+
+inputs:
+  a:
+    shaft_diameter: 6.0
+  b:
+    shaft_diameter: 6.0
+  s:
+    shaft_diameter: 6.0
+
+output:
+  o:
+    shaft_diameter: 6.0
+
+gears:
+  module: 1.5
+  pressure_angle: 20
+  coaxial_teeth: 24
+  bevel_teeth: 16
+  dog_clutch:
+    teeth: 3
+    tooth_height: 2.0
+    engagement_depth: 1.5
+
+geometry:
+  axle_length: 60.0
+  housing_thickness: 4.0
+  lever_throw: 8.0
+  clutch_width: 10.0
+  gear_face_width: 8.0
+  gear_spacing: 1.0
+
+flexure:
+  thickness: 1.2
+  length: 15.0
+  max_deflection: 2.0
+
+tolerances:
+  shaft_clearance: 0.2
+  gear_backlash: 0.15
+  press_fit_interference: -0.1
