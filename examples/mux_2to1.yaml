@@ -22,7 +22,7 @@ gears:
   module: 1.5
   pressure_angle: 20
   coaxial_teeth: 24
-  bevel_teeth: 16
+  bevel_teeth: 16  # Small bevel gears to ensure axle passes through lever pivot
   dog_clutch:
     teeth: 3
     tooth_height: 2.0
