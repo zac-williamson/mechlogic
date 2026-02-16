@@ -1,8 +1,8 @@
 """Combined selector mechanism with bevel gear control.
 
 Creates a complete selector mechanism with:
-- Selector mechanism: two spur gears, dog clutch, shift lever
-- Bevel gear pair: driven gear axle connects to shift lever pivot
+- Selector mechanism: two spur gears, dog clutch (no lever)
+- Bevel lever: bevel gear pair + shift lever for control
 - Rotating the driving bevel gear moves the shift lever to select gears
 """
 
@@ -12,7 +12,7 @@ from ..models.spec import LogicElementSpec
 from ..models.geometry import PartPlacement, PartMetadata, PartType
 from .layout import LayoutCalculator
 from .selector_mechanism import SelectorMechanismGenerator
-from .bevel_pair import BevelPairGenerator
+from .bevel_lever import BevelLeverGenerator
 
 
 class CombinedSelectorGenerator:
@@ -21,7 +21,7 @@ class CombinedSelectorGenerator:
     Creates a gear selector that can be controlled by rotating a bevel gear.
     The bevel gear pair converts rotation to shift lever movement.
 
-    Composes SelectorMechanismGenerator and BevelPairGenerator.
+    Composes SelectorMechanismGenerator and BevelLeverGenerator.
     """
 
     def __init__(self, include_axles: bool = True):
@@ -63,25 +63,20 @@ class CombinedSelectorGenerator:
         """
         ox, oy, oz = origin
         selector_layout = LayoutCalculator.calculate_selector_layout(spec)
-        bevel_layout = LayoutCalculator.calculate_bevel_layout(spec)
-        pivot_y = LayoutCalculator.calculate_pivot_y(spec)
 
-        # Add selector mechanism (without its own axle - we'll add our own)
-        selector_gen = SelectorMechanismGenerator(
-            include_axle=self.include_axles,
-            include_lever=True
-        )
+        # Add selector mechanism (gears + clutch, no lever)
+        selector_gen = SelectorMechanismGenerator(include_axle=self.include_axles)
         selector_gen.add_to_assembly(assy, spec, origin=origin, name_prefix=name_prefix)
 
-        # Add bevel pair at the pivot point
-        # The bevel apex should be at (clutch_center, pivot_y, 0)
-        bevel_apex = (ox + selector_layout.clutch_center, oy + pivot_y, oz)
+        # Add bevel lever (bevel gears + shift lever) at the clutch position
+        # The lever fork engages the clutch at clutch_center
+        bevel_lever_origin = (ox + selector_layout.clutch_center, oy, oz)
 
-        bevel_gen = BevelPairGenerator(include_axles=self.include_axles)
-        bevel_gen.add_to_assembly(
+        bevel_lever_gen = BevelLeverGenerator(include_axles=self.include_axles)
+        bevel_lever_gen.add_to_assembly(
             assy, spec,
-            origin=bevel_apex,
-            name_prefix=f"{name_prefix}bevel_" if name_prefix else ""
+            origin=bevel_lever_origin,
+            name_prefix=name_prefix
         )
 
     def get_metadata(self, spec: LogicElementSpec) -> PartMetadata:
@@ -103,5 +98,5 @@ class CombinedSelectorGenerator:
                 "pivot_y": pivot_y,
                 "bevel_mesh_distance": bevel_layout.mesh_distance,
             },
-            notes="Assembly: selector mechanism + bevel gear control pair",
+            notes="Assembly: selector mechanism + bevel lever control",
         )

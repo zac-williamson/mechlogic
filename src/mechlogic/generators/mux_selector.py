@@ -121,18 +121,19 @@ class MuxSelectorGenerator:
     ) -> None:
         """Add input axles to the assembly."""
         ox, oy, oz = origin
-        face_width = layout.selector.face_width
         shaft_diameter = layout.selector.shaft_diameter
 
+        # Use housing layout for axle positions
+        axle_start = ox + layout.housing.axle_start_x
+        axle_length = layout.housing.axle_length
+
         # Input A axle
-        input_a_axle_start = ox + layout.input_a_x - face_width / 2 - 10
-        input_a_axle_end = ox + layout.input_a_x + face_width / 2 + 10
         input_a_axle = (
             cq.Workplane('YZ')
             .center(oy, oz + layout.input_a_z)
             .circle(shaft_diameter / 2)
-            .extrude(input_a_axle_end - input_a_axle_start)
-            .translate((input_a_axle_start, 0, 0))
+            .extrude(axle_length)
+            .translate((axle_start, 0, 0))
         )
         assy.add(
             input_a_axle,
@@ -141,14 +142,12 @@ class MuxSelectorGenerator:
         )
 
         # Input B axle
-        input_b_axle_start = ox + layout.input_b_x - face_width / 2 - 10
-        input_b_axle_end = ox + layout.input_b_x + face_width / 2 + 10
         input_b_axle = (
             cq.Workplane('YZ')
             .center(oy, oz + layout.input_b_z)
             .circle(shaft_diameter / 2)
-            .extrude(input_b_axle_end - input_b_axle_start)
-            .translate((input_b_axle_start, 0, 0))
+            .extrude(axle_length)
+            .translate((axle_start, 0, 0))
         )
         assy.add(
             input_b_axle,

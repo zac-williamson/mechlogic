@@ -243,6 +243,7 @@ class SerpentineFlexureGenerator:
         result = result.union(right_frame_conn).union(left_frame_conn)
 
         # Add mounting holes if requested
+        # Cut holes explicitly using cylinders to avoid face selection issues after unions
         if p.include_mounting_holes:
             hole_x = outer_width / 2 - p.frame_thickness / 2
             hole_y = outer_height / 2 - p.frame_thickness / 2
@@ -255,13 +256,14 @@ class SerpentineFlexureGenerator:
             ]
 
             for hx, hy in hole_positions:
-                result = (
-                    result
-                    .faces(">Z")
-                    .workplane()
+                hole_cutter = (
+                    cq.Workplane("XY")
                     .center(hx, hy)
-                    .hole(p.mounting_hole_diameter)
+                    .circle(p.mounting_hole_diameter / 2)
+                    .extrude(p.thickness + 2)
+                    .translate((0, 0, -1))
                 )
+                result = result.cut(hole_cutter)
 
         return result
 

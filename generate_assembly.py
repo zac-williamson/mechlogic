@@ -6,15 +6,19 @@ Usage:
 
 Assembly types:
     bevel-pair        Meshing bevel gear pair (90° axis conversion)
-    selector          Gear selector mechanism (2 spur gears + dog clutch + lever)
+    bevel-lever       Bevel gear pair with shift lever
+    selector          Gear selector mechanism (2 spur gears + dog clutch)
     combined-selector Selector mechanism with bevel gear control
     mux-selector      Full 2-to-1 mux with input gears and bevel control
     mux-assembly      Complete mux assembly with housing
+    motor-mounts      Motor mounts for A, B, and S inputs with couplings
+    motor-mounts-no-couplings  Motor mount plates only (no couplings)
 
 Examples:
     python generate_assembly.py bevel-pair
     python generate_assembly.py mux-selector --output my_mux.step
     python generate_assembly.py mux-assembly --spec examples/mux_2to1.yaml
+    python generate_assembly.py motor-mounts --output motor_mounts.step
 """
 
 import argparse
@@ -27,10 +31,14 @@ from src.mechlogic.models.spec import LogicElementSpec
 from src.mechlogic.models.geometry import PartPlacement, PartType
 from src.mechlogic.generators import (
     BevelPairGenerator,
+    BevelLeverGenerator,
+    BevelLeverWithUpperHousingGenerator,
     SelectorMechanismGenerator,
+    SelectorWithHousingGenerator,
     CombinedSelectorGenerator,
     MuxSelectorGenerator,
     MuxAssemblyGenerator,
+    MotorAssemblyGenerator,
 )
 
 
@@ -41,11 +49,35 @@ ASSEMBLY_TYPES = {
         "default_output": "bevel_gear_pair.step",
         "description": "Meshing bevel gear pair (90° axis conversion)",
     },
+    "bevel-lever": {
+        "generator": BevelLeverGenerator,
+        "kwargs": {"include_axles": True},
+        "default_output": "bevel_lever.step",
+        "description": "Bevel gear pair with shift lever",
+    },
+    "bevel-lever-housing": {
+        "generator": BevelLeverWithUpperHousingGenerator,
+        "kwargs": {"include_axles": True, "cantilevered": True, "include_flexure": False},
+        "default_output": "bevel_lever_with_housing.step",
+        "description": "Bevel lever with upper housing plates",
+    },
+    "bevel-lever-flexure": {
+        "generator": BevelLeverWithUpperHousingGenerator,
+        "kwargs": {"include_axles": True, "cantilevered": True, "include_flexure": True},
+        "default_output": "bevel_lever_with_flexure.step",
+        "description": "Bevel lever housing with serpentine flexure",
+    },
     "selector": {
         "generator": SelectorMechanismGenerator,
-        "kwargs": {"include_axle": True, "include_lever": True},
+        "kwargs": {"include_axle": True},
         "default_output": "selector_mechanism.step",
-        "description": "Gear selector mechanism (2 spur gears + dog clutch + lever)",
+        "description": "Gear selector mechanism (2 spur gears + dog clutch)",
+    },
+    "selector-housing": {
+        "generator": SelectorWithHousingGenerator,
+        "kwargs": {"include_axle": True, "housing_transparent": False},
+        "default_output": "selector_with_housing.step",
+        "description": "Selector mechanism with lower housing plates",
     },
     "combined-selector": {
         "generator": CombinedSelectorGenerator,
@@ -64,6 +96,18 @@ ASSEMBLY_TYPES = {
         "kwargs": {"include_housing": True, "housing_transparent": False},
         "default_output": "mux_complete_assembly.step",
         "description": "Complete mux assembly with housing",
+    },
+    "motor-mounts": {
+        "generator": MotorAssemblyGenerator,
+        "kwargs": {"include_couplings": True},
+        "default_output": "motor_mount_assembly.step",
+        "description": "Motor mounts for A, B, and S inputs with couplings",
+    },
+    "motor-mounts-no-couplings": {
+        "generator": MotorAssemblyGenerator,
+        "kwargs": {"include_couplings": False},
+        "default_output": "motor_mounts_only.step",
+        "description": "Motor mount plates only (no couplings)",
     },
 }
 

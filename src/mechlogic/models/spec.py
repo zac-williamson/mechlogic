@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal, Dict
+from typing import Literal, Dict, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -10,7 +10,8 @@ from pydantic import BaseModel, Field, model_validator
 class ShaftSpec(BaseModel):
     """Specification for a shaft/axle."""
 
-    shaft_diameter: float = Field(gt=0, description="Shaft diameter in mm")
+    # Individual shaft_diameter is optional - uses top-level if not specified
+    shaft_diameter: Optional[float] = Field(default=None, gt=0, description="Shaft diameter in mm (optional override)")
 
 
 class ElementInfo(BaseModel):
@@ -55,6 +56,8 @@ class GeometrySpec(BaseModel):
     clutch_width: float = Field(gt=0, description="Width of sliding clutch in mm")
     gear_face_width: float = Field(gt=0, description="Face width of gears in mm")
     gear_spacing: float = Field(ge=0, description="Gap between coaxial gears in mm")
+    device_length_x: float = Field(gt=0, description="Total device length along X axis in mm")
+    axle_overhang: float = Field(ge=0, description="How far axles extend past housing plates in mm")
 
 
 class FlexureSpec(BaseModel):
@@ -90,6 +93,7 @@ class LogicElementSpec(BaseModel):
     """Top-level specification for a mechanical logic element."""
 
     element: ElementInfo
+    shaft_diameter: float = Field(gt=0, description="Primary shaft/axle diameter in mm (used for all shafts)")
     inputs: dict[str, ShaftSpec] = Field(description="Input shaft specifications")
     output: dict[str, ShaftSpec] = Field(description="Output shaft specifications")
     gears: GearSpec
@@ -123,5 +127,5 @@ class LogicElementSpec(BaseModel):
 
     @property
     def primary_shaft_diameter(self) -> float:
-        """Get the primary shaft diameter (assumes all inputs use same diameter for MVP)."""
-        return self.inputs["a"].shaft_diameter
+        """Get the primary shaft diameter."""
+        return self.shaft_diameter

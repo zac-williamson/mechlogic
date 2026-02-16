@@ -5,6 +5,7 @@ import cadquery as cq
 
 from ..models.spec import LogicElementSpec
 from ..models.geometry import PartPlacement, PartMetadata, PartType
+from .layout import LayoutCalculator
 
 
 class ShiftLeverGenerator:
@@ -42,7 +43,8 @@ class ShiftLeverGenerator:
         pivot_block_size = 12.0
         pivot_hole_dia = 6.0
         pivot_block_thickness = pivot_hole_dia * 2
-        pivot_y = clutch_od / 2 + 27  # Distance from clutch axis to pivot (increased by 2mm)
+        # Use layout calculator for consistent pivot position across all components
+        pivot_y = LayoutCalculator.calculate_pivot_y(spec)
 
         # Fork dimensions - fits INSIDE the clutch groove
         fork_clearance = 0.5

@@ -4,6 +4,10 @@ Creates a gear selector assembly with:
 - Two spur gears that freely rotate on a common axle
 - A dog clutch between them that slides along the axle
 - A shift lever to move the clutch
+
+The selector axle is recessed (terminates inside bearing pockets in the
+housing walls) to allow external gears to be mounted on the input axles
+for linking purposes (e.g., X and inverse-X).
 """
 
 import cadquery as cq
@@ -12,8 +16,8 @@ from ..models.spec import LogicElementSpec
 from ..models.geometry import PartPlacement, PartMetadata, PartType
 from .gear_spur import SpurGearGenerator
 from .dog_clutch import DogClutchGenerator
-from .shift_lever import ShiftLeverGenerator
-from .layout import LayoutCalculator, SelectorLayout
+from .layout import LayoutCalculator, SelectorLayout, HousingLayout
+from .lower_housing import LowerHousingParams
 
 
 class SelectorMechanismGenerator:
@@ -21,17 +25,18 @@ class SelectorMechanismGenerator:
 
     Creates two spur gears on a common axle with a sliding dog clutch
     between them. The clutch can engage either gear to transfer drive.
+
+    Note: The shift lever is NOT included here. Use BevelLeverGenerator
+    to add the shift control mechanism (bevel gears + lever).
     """
 
-    def __init__(self, include_axle: bool = True, include_lever: bool = True):
+    def __init__(self, include_axle: bool = True):
         """Initialize the selector mechanism generator.
 
         Args:
             include_axle: Whether to include the selector axle.
-            include_lever: Whether to include the shift lever.
         """
         self.include_axle = include_axle
-        self.include_lever = include_lever
 
     def generate(self, spec: LogicElementSpec, placement: PartPlacement) -> cq.Assembly:
         """Generate a selector mechanism assembly.
@@ -108,9 +113,6 @@ class SelectorMechanismGenerator:
         if self.include_axle:
             self._add_axle(assy, spec, layout, origin, name_prefix)
 
-        if self.include_lever:
-            self._add_lever(assy, spec, layout, origin, name_prefix)
-
     def _add_axle(
         self,
         assy: cq.Assembly,
@@ -119,10 +121,23 @@ class SelectorMechanismGenerator:
         origin: tuple[float, float, float],
         name_prefix: str,
     ) -> None:
-        """Add the selector axle to the assembly."""
+        """Add the selector axle to the assembly.
+
+        The selector axle is recessed on the left (flexure) side, terminating
+        inside a bearing pocket. On the right side, it extends through the
+        housing wall for insertion access, but doesn't project past the outer face.
+        """
         ox, oy, oz = origin
-        axle_start = ox + layout.gear_a_center - layout.face_width / 2 - 10
-        axle_end = ox + layout.gear_b_center + layout.face_width / 2 + 10
+
+        # Get bearing pocket positions from lower housing params
+        lower_params = LowerHousingParams.from_spec(spec)
+        left_inner_face = lower_params.left_plate_x + lower_params.plate_thickness / 2
+        right_outer_face = lower_params.right_plate_x + lower_params.plate_thickness / 2
+
+        # Left side: terminates inside bearing pocket
+        # Right side: extends to outer face (through-hole for insertion)
+        axle_start = ox + left_inner_face - lower_params.selector_bearing_pocket_depth
+        axle_end = ox + right_outer_face  # Flush with right plate outer face
         axle_length = axle_end - axle_start
 
         axle = (
@@ -136,27 +151,6 @@ class SelectorMechanismGenerator:
             axle,
             name=f"{name_prefix}selector_axle" if name_prefix else "selector_axle",
             color=cq.Color("gray")
-        )
-
-    def _add_lever(
-        self,
-        assy: cq.Assembly,
-        spec: LogicElementSpec,
-        layout: SelectorLayout,
-        origin: tuple[float, float, float],
-        name_prefix: str,
-    ) -> None:
-        """Add the shift lever to the assembly."""
-        ox, oy, oz = origin
-        lever_gen = ShiftLeverGenerator()
-        placement_lever = PartPlacement(part_type=PartType.DOG_CLUTCH, part_id="shift_lever")
-        shift_lever = lever_gen.generate(spec, placement_lever)
-
-        assy.add(
-            shift_lever,
-            name=f"{name_prefix}shift_lever" if name_prefix else "shift_lever",
-            loc=cq.Location(cq.Vector(ox + layout.clutch_center, oy, oz)),
-            color=cq.Color("red"),
         )
 
     def get_layout(self, spec: LogicElementSpec) -> SelectorLayout:
@@ -179,5 +173,5 @@ class SelectorMechanismGenerator:
                 "gear_b_x": layout.gear_b_center,
                 "engagement_travel": layout.engagement_travel,
             },
-            notes="Assembly: 2 spur gears + dog clutch + shift lever",
+            notes="Assembly: 2 spur gears + dog clutch",
         )

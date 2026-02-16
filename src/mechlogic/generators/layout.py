@@ -29,10 +29,24 @@ class BevelLayout:
 
 
 @dataclass
+class HousingLayout:
+    """Calculated positions for housing plates and axles."""
+    left_plate_x: float
+    right_plate_x: float
+    plate_thickness: float
+    axle_start_x: float
+    axle_end_x: float
+    axle_length: float
+    device_length_x: float
+    axle_overhang: float
+
+
+@dataclass
 class MuxLayout:
     """Calculated positions for a complete mux assembly."""
     selector: SelectorLayout
     bevel: BevelLayout
+    housing: HousingLayout
     pivot_y: float
     input_a_x: float
     input_a_z: float
@@ -48,6 +62,11 @@ class LayoutCalculator:
     def calculate_selector_layout(spec: LogicElementSpec) -> SelectorLayout:
         """Calculate positions for selector mechanism components.
 
+        The mechanism is centered between the housing plates along the X-axis.
+        The centering accounts for actual gear geometry after 90° rotation:
+        - Gear A: positioned at its left edge, extends right with dog teeth on right
+        - Gear B: positioned at its body left edge, dog teeth extend to the left
+
         Args:
             spec: The logic element specification.
 
@@ -59,14 +78,37 @@ class LayoutCalculator:
         gear_spacing = spec.geometry.gear_spacing
         shaft_diameter = spec.primary_shaft_diameter
         dog_tooth_height = spec.gears.dog_clutch.tooth_height
+        plate_thickness = spec.geometry.housing_thickness
 
         clutch_half_span = clutch_width / 2 + dog_tooth_height
         gear_teeth_end = face_width + dog_tooth_height
 
-        gear_a_center = 0
-        clutch_center = gear_teeth_end + gear_spacing + clutch_half_span
+        # Calculate uncentered positions first
+        # These positions represent where the gear's X=0 point lands after rotation
+        gear_a_uncentered = 0
+        clutch_uncentered = gear_teeth_end + gear_spacing + clutch_half_span
         engagement_travel = gear_spacing + dog_tooth_height
-        gear_b_center = clutch_center + engagement_travel + clutch_half_span
+        gear_b_uncentered = clutch_uncentered + engagement_travel + clutch_half_span
+
+        # Calculate actual mechanism bounding box edges (after rotation)
+        # Gear A: left edge at position, right edge at position + face_width + dog_tooth_height
+        # Gear B: left edge at position - dog_tooth_height, right edge at position + face_width
+        mechanism_left_edge = gear_a_uncentered  # Gear A left edge
+        mechanism_right_edge = gear_b_uncentered + face_width  # Gear B right edge
+
+        # Housing inner faces (where mechanism should fit between)
+        left_plate_inner = plate_thickness / 2
+        right_plate_inner = spec.geometry.device_length_x - plate_thickness / 2
+
+        # Calculate offset to center mechanism between housing inner faces
+        mechanism_center = (mechanism_left_edge + mechanism_right_edge) / 2
+        housing_center = (left_plate_inner + right_plate_inner) / 2
+        centering_offset = housing_center - mechanism_center
+
+        # Apply centering offset
+        gear_a_center = gear_a_uncentered + centering_offset
+        clutch_center = clutch_uncentered + centering_offset
+        gear_b_center = gear_b_uncentered + centering_offset
 
         return SelectorLayout(
             gear_a_center=gear_a_center,
@@ -102,15 +144,68 @@ class LayoutCalculator:
     def calculate_pivot_y(spec: LogicElementSpec) -> float:
         """Calculate the shift lever pivot Y position.
 
+        The pivot Y is set equal to the spur gear pitch diameter so that
+        the driven bevel gear axle is positioned one pitch diameter above
+        the selector gear axle, allowing them to mesh.
+
         Args:
             spec: The logic element specification.
 
         Returns:
             Y coordinate of the pivot point.
         """
-        gear_od = spec.gears.module * spec.gears.coaxial_teeth
-        clutch_od = gear_od * 0.4
-        return clutch_od / 2 + 27  # Must match shift_lever.py
+        spur_pitch_diameter = spec.gears.module * spec.gears.coaxial_teeth
+        return spur_pitch_diameter
+
+    @staticmethod
+    def calculate_spur_gear_radius(spec: LogicElementSpec) -> float:
+        """Calculate the spur gear pitch radius.
+
+        This is used for housing dimensions to enable stackability -
+        mux units can be stacked with spur gears connecting input axles.
+
+        Args:
+            spec: The logic element specification.
+
+        Returns:
+            Pitch radius of spur gears.
+        """
+        spur_pitch_diameter = spec.gears.module * spec.gears.coaxial_teeth
+        return spur_pitch_diameter / 2
+
+    @staticmethod
+    def calculate_housing_layout(spec: LogicElementSpec) -> HousingLayout:
+        """Calculate positions for housing plates and axles.
+
+        Args:
+            spec: The logic element specification.
+
+        Returns:
+            HousingLayout with plate and axle positions.
+        """
+        device_length_x = spec.geometry.device_length_x
+        axle_overhang = spec.geometry.axle_overhang
+        plate_thickness = spec.geometry.housing_thickness
+
+        # Housing plates at start and end of device
+        left_plate_x = 0.0
+        right_plate_x = device_length_x
+
+        # Axles extend past housing plates by axle_overhang
+        axle_start_x = left_plate_x - axle_overhang
+        axle_end_x = right_plate_x + axle_overhang
+        axle_length = axle_end_x - axle_start_x
+
+        return HousingLayout(
+            left_plate_x=left_plate_x,
+            right_plate_x=right_plate_x,
+            plate_thickness=plate_thickness,
+            axle_start_x=axle_start_x,
+            axle_end_x=axle_end_x,
+            axle_length=axle_length,
+            device_length_x=device_length_x,
+            axle_overhang=axle_overhang,
+        )
 
     @staticmethod
     def calculate_mux_layout(spec: LogicElementSpec) -> MuxLayout:
@@ -124,6 +219,7 @@ class LayoutCalculator:
         """
         selector = LayoutCalculator.calculate_selector_layout(spec)
         bevel = LayoutCalculator.calculate_bevel_layout(spec)
+        housing = LayoutCalculator.calculate_housing_layout(spec)
         pivot_y = LayoutCalculator.calculate_pivot_y(spec)
 
         # Input gear positions
@@ -136,6 +232,7 @@ class LayoutCalculator:
         return MuxLayout(
             selector=selector,
             bevel=bevel,
+            housing=housing,
             pivot_y=pivot_y,
             input_a_x=input_a_x,
             input_a_z=input_a_z,
