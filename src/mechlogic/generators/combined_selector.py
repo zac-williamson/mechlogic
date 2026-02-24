@@ -24,13 +24,17 @@ class CombinedSelectorGenerator:
     Composes SelectorMechanismGenerator and BevelLeverGenerator.
     """
 
-    def __init__(self, include_axles: bool = True):
+    def __init__(self, include_axles: bool = True, include_bevel_axles: bool = True):
         """Initialize the combined selector generator.
 
         Args:
-            include_axles: Whether to include axles in the assembly.
+            include_axles: Whether to include selector axle in the assembly.
+            include_bevel_axles: Whether to include bevel axles. Set False when
+                an outer generator (e.g. BevelLeverWithUpperHousingGenerator)
+                provides properly-sized bevel axles.
         """
         self.include_axles = include_axles
+        self.include_bevel_axles = include_bevel_axles
 
     def generate(self, spec: LogicElementSpec, placement: PartPlacement) -> cq.Assembly:
         """Generate a combined selector mechanism assembly.
@@ -72,7 +76,7 @@ class CombinedSelectorGenerator:
         # The lever fork engages the clutch at clutch_center
         bevel_lever_origin = (ox + selector_layout.clutch_center, oy, oz)
 
-        bevel_lever_gen = BevelLeverGenerator(include_axles=self.include_axles)
+        bevel_lever_gen = BevelLeverGenerator(include_axles=self.include_bevel_axles)
         bevel_lever_gen.add_to_assembly(
             assy, spec,
             origin=bevel_lever_origin,

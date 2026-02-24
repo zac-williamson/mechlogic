@@ -17,7 +17,7 @@ import cadquery as cq
 from dataclasses import dataclass
 
 from ..models.spec import LogicElementSpec
-from .layout import LayoutCalculator
+from .layout import LayoutCalculator, SplitSnapParams
 
 
 @dataclass
@@ -36,7 +36,7 @@ class LowerHousingParams:
 
     # Axle dimensions
     axle_diameter: float = 6.0
-    axle_clearance: float = 0.2  # Clearance for rotation (per side)
+    axle_clearance: float = 0.3  # Clearance for rotation (per side)
 
     # Bearing pocket for selector axle (recessed mount)
     # The selector axle terminates inside the housing, supported by bearing pockets
@@ -52,6 +52,13 @@ class LowerHousingParams:
     # Plate X positions (where the plates are located along X)
     left_plate_x: float = -20.0  # Left plate center X
     right_plate_x: float = 40.0  # Right plate center X
+
+    # Connection bolt positions for joining to upper housing
+    # [(x, z)] bolt centers; populated by from_spec()
+    connection_bolt_positions: list = None
+    connection_bolt_diameter: float = 3.2   # M3 clearance
+    connection_flange_depth: float = 15.0   # Z extent of flange tabs
+    connection_flange_height: float = 8.0   # Y extent of flange tabs
 
     @property
     def plate_height(self) -> float:
@@ -91,6 +98,9 @@ class LowerHousingParams:
         # Should be deep enough for secure support but not go through the wall
         bearing_pocket_depth = min(5.0, housing_layout.plate_thickness - 2.0)
 
+        # Connection bolt layout for joining to upper housing
+        conn = LayoutCalculator.calculate_connection_layout(spec)
+
         return cls(
             selector_axle_y=0.0,
             selector_axle_z=0.0,
@@ -102,12 +112,16 @@ class LowerHousingParams:
             axle_clearance=spec.tolerances.shaft_clearance,
             selector_bearing_pocket_depth=bearing_pocket_depth,
             selector_bearing_pocket_clearance=spec.tolerances.shaft_clearance,
-            plate_thickness=housing_layout.plate_thickness,
+            plate_thickness=max(housing_layout.plate_thickness, 6.0),
             plate_y_min=plate_y_min,
             plate_y_max=plate_y_max,
             plate_margin=plate_margin,
             left_plate_x=housing_layout.left_plate_x,
             right_plate_x=housing_layout.right_plate_x,
+            connection_bolt_positions=conn.bolt_positions,
+            connection_bolt_diameter=conn.bolt_diameter,
+            connection_flange_depth=conn.flange_depth,
+            connection_flange_height=conn.flange_height,
         )
 
 
@@ -203,29 +217,49 @@ class LowerHousingGenerator:
         selector_y = p.selector_axle_y
         selector_z = p.selector_axle_z
 
-        if is_left_plate:
-            # Left plate: bearing pocket (blind hole from inner face)
-            pocket_depth = p.selector_bearing_pocket_depth
-            pocket = (
-                cq.Workplane('YZ')
-                .center(selector_y, selector_z)
-                .circle(selector_hole_diameter / 2)
-                .extrude(pocket_depth)
-            )
-            # Pocket starts at inner face of left plate (+X side)
-            pocket_start_x = plate_x + p.plate_thickness / 2 - pocket_depth
-            pocket = pocket.translate((pocket_start_x, 0, 0))
-            plate = plate.cut(pocket)
-        else:
-            # Right plate: through-hole for axle insertion
-            selector_hole_point = [(selector_y - plate_center_y, selector_z - plate_center_z)]
-            plate = (
-                plate
-                .faces(">X")
-                .workplane()
-                .pushPoints(selector_hole_point)
-                .hole(selector_hole_diameter)
-            )
+        # Both plates: through-hole for selector axle
+        # (C-clips now provide axial retention, so bearing pockets are unnecessary)
+        selector_hole_point = [(selector_y - plate_center_y, selector_z - plate_center_z)]
+        plate = (
+            plate
+            .faces(">X")
+            .workplane()
+            .pushPoints(selector_hole_point)
+            .hole(selector_hole_diameter)
+        )
+
+        # Add connection flange tabs for bolting to upper housing
+        if p.connection_bolt_positions:
+            overlap = 1.0  # Overlap into plate to ensure solid union
+            for bx, bz in p.connection_bolt_positions:
+                if abs(bx - plate_x) > 0.1:
+                    continue  # Only add flanges for this plate's X position
+
+                # Tab extends upward from plate top, outward in Z
+                tab = (
+                    cq.Workplane('XY')
+                    .box(p.plate_thickness,
+                         p.connection_flange_height + overlap,
+                         p.connection_flange_depth, centered=False)
+                    .translate((
+                        bx - p.plate_thickness / 2,
+                        p.plate_y_max - overlap,
+                        bz - p.connection_flange_depth / 2,
+                    ))
+                )
+                plate = plate.union(tab)
+
+                # M3 through-hole (Y-axis) from top of tab through the plate
+                hole_height = (p.plate_y_max + p.connection_flange_height
+                               - p.plate_y_min + 2)
+                bolt_hole = (
+                    cq.Workplane('XY')
+                    .circle(p.connection_bolt_diameter / 2)
+                    .extrude(hole_height)
+                    .rotate((0, 0, 0), (1, 0, 0), -90)
+                    .translate((bx, p.plate_y_min - 1, bz))
+                )
+                plate = plate.cut(bolt_hole)
 
         return plate
 
@@ -352,6 +386,196 @@ class LowerHousingGenerator:
             'selector_axle_y': p.selector_axle_y,
             'selector_axle_z': p.selector_axle_z,
         }
+
+
+    def generate_split(
+        self,
+        split_x: Optional[float] = None,
+        snap: Optional[SplitSnapParams] = None,
+    ) -> tuple[cq.Workplane, cq.Workplane]:
+        """Generate lower housing split into left and right halves.
+
+        Generates the full housing, cuts it at split_x, then adds
+        tongue-and-groove snap features to the cut faces.
+
+        Args:
+            split_x: X coordinate of the split plane. Defaults to midpoint.
+            snap: Snap feature parameters. Defaults to SplitSnapParams().
+
+        Returns:
+            Tuple of (left_half, right_half).
+        """
+        if split_x is None:
+            split_x = (self.params.left_plate_x + self.params.right_plate_x) / 2
+        if snap is None:
+            snap = SplitSnapParams()
+
+        # Generate full housing as single solid
+        side_plates, front_back_walls = self.generate()
+        housing = side_plates.union(front_back_walls)
+
+        # Cut into halves
+        left_half = self._cut_half(housing, split_x, keep_left=True)
+        right_half = self._cut_half(housing, split_x, keep_left=False)
+
+        # Add snap features to the front and back wall cut faces
+        p = self.params
+        z_min, z_max = self._calculate_plate_z_extent()
+        wall_locations_z = [z_min, z_max]  # Front and back wall centers
+
+        # Use actual wall Y bounds (not bounding box which includes flanges)
+        left_half = self._add_snap_tongues(
+            left_half, split_x, wall_locations_z, snap, p.plate_thickness,
+            snap.tongue_width_lower,
+            wall_y_min=p.plate_y_min, wall_y_max=p.plate_y_max,
+        )
+        right_half = self._add_snap_grooves(
+            right_half, split_x, wall_locations_z, snap, p.plate_thickness,
+            snap.tongue_width_lower,
+            wall_y_min=p.plate_y_min, wall_y_max=p.plate_y_max,
+        )
+
+        return left_half, right_half
+
+    @staticmethod
+    def _cut_half(
+        housing: cq.Workplane, split_x: float, keep_left: bool,
+    ) -> cq.Workplane:
+        """Cut housing at split_x, keeping left or right half.
+
+        Uses a large box to intersect with the desired half-space.
+        """
+        bb = housing.val().BoundingBox()
+        box_size = 500  # Large enough to cover any housing
+
+        if keep_left:
+            # Keep everything with X < split_x
+            cutter = (
+                cq.Workplane('XY')
+                .box(box_size, box_size, box_size, centered=False)
+                .translate((split_x - box_size, bb.ymin - 100, bb.zmin - 100))
+            )
+        else:
+            # Keep everything with X > split_x
+            cutter = (
+                cq.Workplane('XY')
+                .box(box_size, box_size, box_size, centered=False)
+                .translate((split_x, bb.ymin - 100, bb.zmin - 100))
+            )
+        return housing.intersect(cutter)
+
+    @staticmethod
+    def _add_snap_tongues(
+        half: cq.Workplane,
+        split_x: float,
+        wall_z_positions: list[float],
+        snap: SplitSnapParams,
+        wall_thickness: float,
+        tongue_width: float,
+        wall_y_min: float = None,
+        wall_y_max: float = None,
+    ) -> cq.Workplane:
+        """Add tongue protrusions to the left half at each wall cut face.
+
+        Each tongue runs most of the wall's Y height (minus inset) and
+        protrudes in +X from the cut face. A small detent bump sits on
+        each Z-face of the tongue for click retention.
+
+        Args:
+            wall_y_min: Bottom Y of the walls (not flanges). If None, uses BB.
+            wall_y_max: Top Y of the walls (not flanges). If None, uses BB.
+        """
+        if wall_y_min is None or wall_y_max is None:
+            bb = half.val().BoundingBox()
+            wall_y_min = wall_y_min if wall_y_min is not None else bb.ymin
+            wall_y_max = wall_y_max if wall_y_max is not None else bb.ymax
+
+        y_lo = wall_y_min + snap.wall_inset
+        y_hi = wall_y_max - snap.wall_inset
+        tongue_height = y_hi - y_lo
+        tongue_center_y = (y_lo + y_hi) / 2
+
+        for wz in wall_z_positions:
+            # Tongue: centered on wall Z, runs tongue_height in Y, protrudes in +X
+            tongue = (
+                cq.Workplane('XY')
+                .box(snap.tongue_protrusion, tongue_height, tongue_width,
+                     centered=False)
+                .translate((split_x, y_lo, wz - tongue_width / 2))
+            )
+            half = half.union(tongue)
+
+            # Detent bumps on front (+Z) and back (-Z) faces of tongue
+            bump_x = split_x + snap.tongue_protrusion / 2
+            for z_sign in [-1, 1]:
+                bump_z = wz + z_sign * tongue_width / 2
+                bump = (
+                    cq.Workplane('XY')
+                    .sphere(snap.detent_radius)
+                    .translate((bump_x, tongue_center_y, bump_z))
+                )
+                half = half.union(bump)
+
+        return half
+
+    @staticmethod
+    def _add_snap_grooves(
+        half: cq.Workplane,
+        split_x: float,
+        wall_z_positions: list[float],
+        snap: SplitSnapParams,
+        wall_thickness: float,
+        tongue_width: float,
+        wall_y_min: float = None,
+        wall_y_max: float = None,
+    ) -> cq.Workplane:
+        """Add groove slots to the right half at each wall cut face.
+
+        Each groove matches the tongue with clearance added. A matching
+        detent ridge channel is cut for engagement.
+
+        The groove is cut INTO the right half starting at split_x and
+        extending in +X by tongue_protrusion, so the left half's tongue
+        can slide in from -X.
+
+        Args:
+            wall_y_min: Bottom Y of the walls (not flanges). If None, uses BB.
+            wall_y_max: Top Y of the walls (not flanges). If None, uses BB.
+        """
+        if wall_y_min is None or wall_y_max is None:
+            bb = half.val().BoundingBox()
+            wall_y_min = wall_y_min if wall_y_min is not None else bb.ymin
+            wall_y_max = wall_y_max if wall_y_max is not None else bb.ymax
+
+        y_lo = wall_y_min + snap.wall_inset - snap.tongue_clearance
+        y_hi = wall_y_max - snap.wall_inset + snap.tongue_clearance
+        groove_height = y_hi - y_lo
+        groove_center_y = (y_lo + y_hi) / 2
+
+        groove_width = tongue_width + 2 * snap.tongue_clearance
+
+        for wz in wall_z_positions:
+            # Groove: cut into right half starting at split_x, extending in +X
+            groove = (
+                cq.Workplane('XY')
+                .box(snap.tongue_protrusion, groove_height, groove_width,
+                     centered=False)
+                .translate((split_x, y_lo, wz - groove_width / 2))
+            )
+            half = half.cut(groove)
+
+            # Detent ridge channels — match bump positions on tongue
+            bump_x = split_x + snap.tongue_protrusion / 2
+            for z_sign in [-1, 1]:
+                bump_z = wz + z_sign * tongue_width / 2
+                ridge = (
+                    cq.Workplane('XY')
+                    .sphere(snap.detent_radius + snap.tongue_clearance)
+                    .translate((bump_x, groove_center_y, bump_z))
+                )
+                half = half.cut(ridge)
+
+        return half
 
 
 def main():

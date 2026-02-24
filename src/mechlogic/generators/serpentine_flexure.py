@@ -10,6 +10,7 @@ class SerpentineFlexureParams:
 
     # Axle hole
     axle_diameter: float = 6.0
+    axle_clearance: float = 0.3  # Clearance for rotation (per side)
 
     # Floating platform (holds the axle)
     platform_width: float = 14.0   # X dimension
@@ -172,7 +173,7 @@ class SerpentineFlexureGenerator:
             platform
             .faces(">Z")
             .workplane()
-            .hole(p.axle_diameter)
+            .hole(p.axle_diameter + p.axle_clearance * 2)
         )
 
         # Create serpentine beams on each side

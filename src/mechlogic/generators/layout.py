@@ -3,10 +3,44 @@
 Centralizes position and dimension calculations used across multiple generators.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import List, Tuple
 
 from ..models.spec import LogicElementSpec
 from .gear_bevel import BevelGearGenerator
+
+
+@dataclass
+class SplitSnapParams:
+    """Parameters for tongue-and-groove snap features on split housing faces.
+
+    Tongue protrudes from the left half in +X; groove is cut into the right half.
+    Detent bumps/ridges provide click retention.
+    """
+    tongue_width_lower: float = 4.0   # Y-dimension of tongue (6mm lower walls)
+    tongue_width_upper: float = 3.0   # Y-dimension of tongue (4mm upper walls)
+    tongue_protrusion: float = 2.5    # How far tongue extends in X
+    tongue_clearance: float = 0.1     # Clearance per side for groove fit
+    detent_radius: float = 0.3        # Bump radius on tongue Z-faces
+    wall_inset: float = 1.0           # Inset from each Y-end of the wall
+
+
+@dataclass
+class ConnectionLayout:
+    """Bolt positions for connecting upper and lower housings.
+
+    Flanges extend outward in Z from the upper housing frame corners.
+    The lower housing plates (which span a wider Z range) get matching
+    bolt holes at these positions.
+    """
+    mating_y: float                          # Y of the mating plane between housings
+    bolt_positions: List[Tuple[float, float]]  # (x, z) of each bolt center
+    upper_outer_z_min: float                 # Front face Z of upper housing
+    upper_outer_z_max: float                 # Back face Z of upper housing
+    flange_depth: float = 15.0               # How far flanges extend in Z beyond frame
+    flange_height: float = 8.0               # Y extent of each flange tab
+    flange_width: float = 10.0               # X extent of each flange tab
+    bolt_diameter: float = 3.2               # M3 clearance hole
 
 
 @dataclass
@@ -239,4 +273,66 @@ class LayoutCalculator:
             input_b_x=input_b_x,
             input_b_z=input_b_z,
             spur_pitch_diameter=spur_pitch_diameter,
+        )
+
+    @staticmethod
+    def calculate_split_x(spec: LogicElementSpec) -> float:
+        """Calculate the X coordinate of the split plane.
+
+        Returns the midpoint between left and right housing plates.
+        """
+        housing = LayoutCalculator.calculate_housing_layout(spec)
+        return (housing.left_plate_x + housing.right_plate_x) / 2
+
+    @staticmethod
+    def calculate_connection_layout(spec: LogicElementSpec) -> ConnectionLayout:
+        """Calculate bolt positions for connecting upper and lower housings.
+
+        Computes the upper housing's Z extent from flexure parameters,
+        then places bolt flanges extending outward from the front/back walls.
+        Both generators use this to ensure matching positions.
+        """
+        from .serpentine_flexure import SerpentineFlexureParams
+
+        housing_layout = LayoutCalculator.calculate_housing_layout(spec)
+        spur_gear_radius = LayoutCalculator.calculate_spur_gear_radius(spec)
+        wall_thickness = max(spec.geometry.housing_thickness, 6.0)
+
+        mating_y = spur_gear_radius / 2  # = plate_y_max from lower housing
+
+        # Compute upper housing Z extent (mirrors bevel_lever_with_upper_housing)
+        fp = SerpentineFlexureParams()
+        fold_pitch = fp.beam_width + fp.beam_spacing
+        serpentine_width = (fp.num_folds - 1) * fold_pitch + fp.beam_width
+        inner_width = fp.platform_width + 2 * serpentine_width + 2 * fp.beam_spacing
+        flexure_outer_width = inner_width + 2 * fp.frame_thickness
+
+        mounting_hole_clearance = 5.0
+        wall_z_extent = flexure_outer_width + 2 * wall_thickness + 2 * mounting_hole_clearance
+
+        front_wall_z = -wall_z_extent / 2 + wall_thickness
+        back_wall_z = wall_z_extent / 2 - wall_thickness
+
+        outer_z_min = front_wall_z - wall_thickness / 2
+        outer_z_max = back_wall_z + wall_thickness / 2
+
+        flange_depth = 15.0
+
+        # Bolt centers are in the middle of the flange tabs
+        bolt_z_front = outer_z_min - flange_depth / 2
+        bolt_z_back = outer_z_max + flange_depth / 2
+
+        bolt_positions = [
+            (housing_layout.left_plate_x, bolt_z_front),
+            (housing_layout.left_plate_x, bolt_z_back),
+            (housing_layout.right_plate_x, bolt_z_front),
+            (housing_layout.right_plate_x, bolt_z_back),
+        ]
+
+        return ConnectionLayout(
+            mating_y=mating_y,
+            bolt_positions=bolt_positions,
+            upper_outer_z_min=outer_z_min,
+            upper_outer_z_max=outer_z_max,
+            flange_depth=flange_depth,
         )

@@ -15,6 +15,7 @@ from ..models.geometry import PartPlacement, PartMetadata, PartType
 from .gear_spur import SpurGearGenerator
 from .layout import LayoutCalculator, MuxLayout
 from .combined_selector import CombinedSelectorGenerator
+from .axle_profile import make_d_flat_axle, add_groove_to_axle
 
 
 class MuxSelectorGenerator:
@@ -26,13 +27,16 @@ class MuxSelectorGenerator:
     Composes CombinedSelectorGenerator and adds input gears.
     """
 
-    def __init__(self, include_axles: bool = True):
+    def __init__(self, include_axles: bool = True, include_bevel_axles: bool = True):
         """Initialize the mux selector generator.
 
         Args:
-            include_axles: Whether to include axles in the assembly.
+            include_axles: Whether to include selector/input axles in the assembly.
+            include_bevel_axles: Whether to include bevel axles. Set False when
+                an outer generator provides properly-sized bevel axles.
         """
         self.include_axles = include_axles
+        self.include_bevel_axles = include_bevel_axles
 
     def generate(self, spec: LogicElementSpec, placement: PartPlacement) -> cq.Assembly:
         """Generate a 2-to-1 mux selector assembly.
@@ -67,7 +71,10 @@ class MuxSelectorGenerator:
         layout = LayoutCalculator.calculate_mux_layout(spec)
 
         # Add combined selector (selector mechanism + bevel pair)
-        combined_gen = CombinedSelectorGenerator(include_axles=self.include_axles)
+        combined_gen = CombinedSelectorGenerator(
+            include_axles=self.include_axles,
+            include_bevel_axles=self.include_bevel_axles,
+        )
         combined_gen.add_to_assembly(assy, spec, origin=origin, name_prefix=name_prefix)
 
         # Add input gears
@@ -87,8 +94,8 @@ class MuxSelectorGenerator:
         """Add input gears to the assembly."""
         ox, oy, oz = origin
 
-        gear_a_gen = SpurGearGenerator(gear_id="a")
-        gear_b_gen = SpurGearGenerator(gear_id="b")
+        gear_a_gen = SpurGearGenerator(gear_id="a", include_dog_teeth=False)
+        gear_b_gen = SpurGearGenerator(gear_id="b", include_dog_teeth=False)
         placement_generic = PartPlacement(part_type=PartType.GEAR_A, part_id="input")
 
         # Input gear A (above Gear A)
@@ -119,41 +126,38 @@ class MuxSelectorGenerator:
         origin: tuple[float, float, float],
         name_prefix: str,
     ) -> None:
-        """Add input axles to the assembly."""
+        """Add input axles (D-flat profile) to the assembly.
+
+        Housing walls provide axial retention for gears.
+        """
         ox, oy, oz = origin
         shaft_diameter = layout.selector.shaft_diameter
+        d_flat_depth = spec.tolerances.d_flat_depth
 
-        # Use housing layout for axle positions
         axle_start = ox + layout.housing.axle_start_x
         axle_length = layout.housing.axle_length
 
-        # Input A axle
-        input_a_axle = (
-            cq.Workplane('YZ')
-            .center(oy, oz + layout.input_a_z)
-            .circle(shaft_diameter / 2)
-            .extrude(axle_length)
-            .translate((axle_start, 0, 0))
-        )
-        assy.add(
-            input_a_axle,
-            name=f"{name_prefix}input_a_axle" if name_prefix else "input_a_axle",
-            color=cq.Color("gray")
-        )
+        face_width = spec.geometry.gear_face_width
+        groove_offset = 1.0  # mm from gear edge
 
-        # Input B axle
-        input_b_axle = (
-            cq.Workplane('YZ')
-            .center(oy, oz + layout.input_b_z)
-            .circle(shaft_diameter / 2)
-            .extrude(axle_length)
-            .translate((axle_start, 0, 0))
-        )
-        assy.add(
-            input_b_axle,
-            name=f"{name_prefix}input_b_axle" if name_prefix else "input_b_axle",
-            color=cq.Color("gray")
-        )
+        for axle_name, axle_z, gear_x in [
+            ("input_a_axle", layout.input_a_z, layout.input_a_x),
+            ("input_b_axle", layout.input_b_z, layout.input_b_x),
+        ]:
+            axle = make_d_flat_axle(shaft_diameter, axle_length, d_flat_depth)
+            axle = axle.translate((axle_start, oy, oz + axle_z))
+
+            # Add C-clip retention grooves flanking the gear
+            groove_x_left = ox + gear_x - groove_offset
+            groove_x_right = ox + gear_x + face_width + groove_offset
+            axle = add_groove_to_axle(axle, groove_x_left, shaft_diameter)
+            axle = add_groove_to_axle(axle, groove_x_right, shaft_diameter)
+
+            assy.add(
+                axle,
+                name=f"{name_prefix}{axle_name}" if name_prefix else axle_name,
+                color=cq.Color("gray")
+            )
 
     def get_layout(self, spec: LogicElementSpec) -> MuxLayout:
         """Get the layout for this mux mechanism."""

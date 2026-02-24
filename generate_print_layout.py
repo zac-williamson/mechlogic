@@ -25,6 +25,10 @@ from src.mechlogic.generators.lower_housing import LowerHousingGenerator
 from src.mechlogic.generators.bevel_lever_with_upper_housing import BevelLeverWithUpperHousingGenerator
 from src.mechlogic.generators.serpentine_flexure import SerpentineFlexureGenerator
 from src.mechlogic.generators.lower_housing import LowerHousingParams
+from src.mechlogic.generators.axle_profile import (
+    make_d_flat_axle, make_d_flat_axle_along_z, add_groove_to_axle, make_c_clip,
+)
+from src.mechlogic.generators.gear_bevel import BevelGearGenerator
 
 
 def load_spec(spec_file: Path) -> LogicElementSpec:
@@ -40,21 +44,35 @@ def generate_parts(spec: LogicElementSpec) -> list:
 
     parts = []
 
-    # --- Spur Gears (4 identical gears: gear_a, gear_b, input_a, input_b) ---
-    gear_gen = SpurGearGenerator(gear_id="a")
-    gear = gear_gen.generate(spec, placement)
+    # --- Coaxial Spur Gears (free-spinning on axle, engaged via dog clutch) ---
     gear_od = spec.gears.module * spec.gears.coaxial_teeth + 2 * spec.gears.module
 
-    parts.append(("gear_a", gear, gear_od))
-    parts.append(("gear_b", gear, gear_od))
-    parts.append(("input_gear_a", gear, gear_od))
-    parts.append(("input_gear_b", gear, gear_od))
+    coaxial_a_gen = SpurGearGenerator(gear_id="a", free_spinning=True)
+    coaxial_a = coaxial_a_gen.generate(spec, placement)
+    parts.append(("gear_a", coaxial_a, gear_od))
 
-    # --- Dog Clutch ---
+    coaxial_b_gen = SpurGearGenerator(gear_id="b", free_spinning=True)
+    coaxial_b = coaxial_b_gen.generate(spec, placement)
+    # Flip so dog teeth point up (+Z) for printing without supports
+    coaxial_b = coaxial_b.rotate((0, 0, 0), (1, 0, 0), 180)
+    parts.append(("gear_b", coaxial_b, gear_od))
+
+    # --- Input Spur Gears (friction-fit on axle, no dog teeth) ---
+    input_gen = SpurGearGenerator(gear_id="a", include_dog_teeth=False)
+    input_gear = input_gen.generate(spec, placement)
+    parts.append(("input_gear_a", input_gear, gear_od))
+    parts.append(("input_gear_b", input_gear, gear_od))
+
+    # --- Dog Clutch (two separate pieces: inner core + outer sleeve) ---
     clutch_gen = DogClutchGenerator()
-    clutch = clutch_gen.generate(spec, placement)
     clutch_od = gear_od * 0.4
-    parts.append(("dog_clutch", clutch, clutch_od + 5))
+
+    inner_core = clutch_gen.generate_inner_core(spec)
+    core_od = spec.primary_shaft_diameter + DogClutchGenerator.CORE_OD_OFFSET
+    parts.append(("clutch_inner_core", inner_core, core_od + 2))
+
+    outer_sleeve = clutch_gen.generate_outer_sleeve(spec)
+    parts.append(("clutch_outer_sleeve", outer_sleeve, clutch_od + 2))
 
     # --- Bevel Gears (driving + driven) ---
     bevel_gen = BevelGearGenerator(gear_id="driving")
@@ -71,47 +89,20 @@ def generate_parts(spec: LogicElementSpec) -> list:
     lever = lever_gen.generate(spec, placement)
     parts.append(("shift_lever", lever, 35.0))
 
-    # --- Lower Housing (left plate, right plate, front wall, back wall) ---
+    # --- Lower Housing (split into left and right halves) ---
     housing_gen = LowerHousingGenerator(spec=spec)
     lower_params = LowerHousingParams.from_spec(spec)
-    housing_layout = LayoutCalculator.calculate_housing_layout(spec)
 
-    left_plate = housing_gen.generate_plate(
-        housing_layout.left_plate_x, is_left_plate=True
-    )
-    right_plate = housing_gen.generate_plate(
-        housing_layout.right_plate_x, is_left_plate=False
-    )
+    lower_left, lower_right = housing_gen.generate_split()
 
-    # Calculate plate size for spacing
-    z_min, z_max = housing_gen._calculate_plate_z_extent()
-    plate_z_size = z_max - z_min
-    plate_y_size = lower_params.plate_y_max - lower_params.plate_y_min
+    for name, half in [("lower_housing_left", lower_left), ("lower_housing_right", lower_right)]:
+        bb = half.val().BoundingBox()
+        half_origin = half.translate((-bb.xmin, -bb.ymin, -bb.zmin))
+        parts.append((name, half_origin,
+                       max(bb.xmax - bb.xmin, bb.ymax - bb.ymin,
+                           bb.zmax - bb.zmin)))
 
-    # Move plates to origin (they're generated at their assembly position)
-    left_bb = left_plate.val().BoundingBox()
-    left_plate_origin = left_plate.translate((
-        -left_bb.xmin, -left_bb.ymin, -left_bb.zmin
-    ))
-    parts.append(("housing_left_plate", left_plate_origin, max(plate_z_size, plate_y_size)))
-
-    right_bb = right_plate.val().BoundingBox()
-    right_plate_origin = right_plate.translate((
-        -right_bb.xmin, -right_bb.ymin, -right_bb.zmin
-    ))
-    parts.append(("housing_right_plate", right_plate_origin, max(plate_z_size, plate_y_size)))
-
-    # Front and back walls
-    side_plates, front_back_walls = housing_gen.generate()
-    # Extract the front/back walls compound - move to origin
-    fb_bb = front_back_walls.val().BoundingBox()
-    front_back_origin = front_back_walls.translate((
-        -fb_bb.xmin, -fb_bb.ymin, -fb_bb.zmin
-    ))
-    parts.append(("housing_front_back_walls", front_back_origin,
-                   max(fb_bb.xmax - fb_bb.xmin, fb_bb.ymax - fb_bb.ymin)))
-
-    # --- Upper Housing ---
+    # --- Upper Housing (split into left and right halves) ---
     selector_layout = LayoutCalculator.calculate_selector_layout(spec)
     origin = (selector_layout.clutch_center, 0, 0)
 
@@ -122,14 +113,14 @@ def generate_parts(spec: LogicElementSpec) -> list:
         lower_housing_y_max=lower_params.plate_y_max,
         l_shaped_front_back=False,
     )
-    upper_housing = upper_gen._generate_upper_housing(spec, origin)
-    uh_bb = upper_housing.val().BoundingBox()
-    upper_housing_origin = upper_housing.translate((
-        -uh_bb.xmin, -uh_bb.ymin, -uh_bb.zmin
-    ))
-    parts.append(("upper_housing", upper_housing_origin,
-                   max(uh_bb.xmax - uh_bb.xmin, uh_bb.ymax - uh_bb.ymin,
-                       uh_bb.zmax - uh_bb.zmin)))
+    upper_left, upper_right = upper_gen.generate_split_upper_housing(spec, origin)
+
+    for name, half in [("upper_housing_left", upper_left), ("upper_housing_right", upper_right)]:
+        bb = half.val().BoundingBox()
+        half_origin = half.translate((-bb.xmin, -bb.ymin, -bb.zmin))
+        parts.append((name, half_origin,
+                       max(bb.xmax - bb.xmin, bb.ymax - bb.ymin,
+                           bb.zmax - bb.zmin)))
 
     # --- Serpentine Flexure ---
     try:
@@ -142,6 +133,98 @@ def generate_parts(spec: LogicElementSpec) -> list:
                        max(fl_bb.xmax - fl_bb.xmin, fl_bb.ymax - fl_bb.ymin)))
     except Exception as e:
         print(f"  Warning: could not generate flexure: {e}")
+
+    # --- Printable D-flat Axles ---
+    shaft_dia = spec.primary_shaft_diameter
+    d_flat_depth = spec.tolerances.d_flat_depth
+    housing_layout = LayoutCalculator.calculate_housing_layout(spec)
+
+    # Selector axle (through-hole both sides) with retention grooves
+    sel_axle_length = housing_layout.axle_length
+    sel_axle_start = housing_layout.axle_start_x
+    sel_axle = make_d_flat_axle(shaft_dia, sel_axle_length, d_flat_depth)
+
+    # Grooves outboard of gear A and gear B (positions relative to axle start at X=0)
+    face_width = spec.geometry.gear_face_width
+    groove_offset = 1.0
+    # Selector gear positions are absolute; convert to axle-local coordinates
+    sel_groove_left = selector_layout.gear_a_center - groove_offset - sel_axle_start
+    sel_groove_right = selector_layout.gear_b_center + face_width + groove_offset - sel_axle_start
+    sel_axle = add_groove_to_axle(sel_axle, sel_groove_left, shaft_dia)
+    sel_axle = add_groove_to_axle(sel_axle, sel_groove_right, shaft_dia)
+    # Inner core retention grooves (axle-local coordinates)
+    clutch_width = spec.geometry.clutch_width
+    engagement_travel = selector_layout.engagement_travel
+    core_length = clutch_width + 2 * engagement_travel + 2.0
+    sel_core_groove_left = selector_layout.clutch_center - core_length / 2 - 1.0 - sel_axle_start
+    sel_core_groove_right = selector_layout.clutch_center + core_length / 2 + 1.0 - sel_axle_start
+    sel_axle = add_groove_to_axle(sel_axle, sel_core_groove_left, shaft_dia)
+    sel_axle = add_groove_to_axle(sel_axle, sel_core_groove_right, shaft_dia)
+    # Rotate so D-flat face (was +Y) lies on print bed (-Z)
+    sel_axle = sel_axle.rotate((0, 0, 0), (1, 0, 0), -90)
+    parts.append(("selector_axle", sel_axle, sel_axle_length))
+
+    # Input axles with retention grooves
+    input_axle_length = housing_layout.axle_length
+    axle_start_x = housing_layout.axle_start_x
+    for name, gear_x in [
+        ("input_a_axle", layout.input_a_x),
+        ("input_b_axle", layout.input_b_x),
+    ]:
+        axle = make_d_flat_axle(shaft_dia, input_axle_length, d_flat_depth)
+        # Convert gear X to axle-local coordinate
+        local_gear_x = gear_x - axle_start_x
+        axle = add_groove_to_axle(axle, local_gear_x - groove_offset, shaft_dia)
+        axle = add_groove_to_axle(axle, local_gear_x + face_width + groove_offset, shaft_dia)
+        # Rotate so D-flat face lies on print bed
+        axle = axle.rotate((0, 0, 0), (1, 0, 0), -90)
+        parts.append((name, axle, input_axle_length))
+
+    # Driving bevel axle with retention grooves
+    bevel_layout = LayoutCalculator.calculate_bevel_layout(spec)
+    bevel_face_width = BevelGearGenerator(gear_id="driving").get_face_width(spec)
+    bevel_groove_offset = bevel_face_width + 1.0
+    # Recompute driving axle length (mirrors bevel_lever_with_upper_housing._add_axles)
+    wall_thickness = max(spec.geometry.housing_thickness, 6.0)
+    left_wall_x = housing_layout.left_plate_x
+    driving_axle_start = left_wall_x - wall_thickness / 2 - housing_layout.axle_overhang
+    driving_gear_x = selector_layout.clutch_center - bevel_layout.mesh_distance
+    lever_left_edge = selector_layout.clutch_center - 6.0
+    driving_axle_end = min(driving_gear_x + 8, lever_left_edge - 2.0)
+    driving_axle_length = driving_axle_end - driving_axle_start
+    driving_axle = make_d_flat_axle(shaft_dia, driving_axle_length, d_flat_depth)
+    # Grooves flanking driving bevel gear (axle-local coordinates)
+    local_driving_gear_x = driving_gear_x - driving_axle_start
+    driving_axle = add_groove_to_axle(driving_axle, local_driving_gear_x - bevel_groove_offset, shaft_dia)
+    driving_axle = add_groove_to_axle(driving_axle, local_driving_gear_x + bevel_groove_offset, shaft_dia)
+    # Rotate so D-flat face lies on print bed
+    driving_axle = driving_axle.rotate((0, 0, 0), (1, 0, 0), -90)
+    parts.append(("driving_bevel_axle", driving_axle, driving_axle_length))
+
+    # Driven bevel axle with retention grooves
+    # Use actual upper housing bounding box to ensure axle extends past flanges
+    full_upper_housing = upper_gen._generate_upper_housing(spec, origin)
+    upper_bb = full_upper_housing.val().BoundingBox()
+    driven_axle_start = upper_bb.zmin - housing_layout.axle_overhang
+    driven_axle_end = upper_bb.zmax + housing_layout.axle_overhang
+    driven_axle_length = driven_axle_end - driven_axle_start
+    driven_axle = make_d_flat_axle(shaft_dia, driven_axle_length, d_flat_depth)
+    # Grooves flanking driven bevel gear (axle-local coordinates)
+    # Driven gear Z = -bevel_layout.mesh_distance; axle starts at driven_axle_start
+    local_driven_gear_z = -bevel_layout.mesh_distance - driven_axle_start
+    driven_axle = add_groove_to_axle(driven_axle, local_driven_gear_z - bevel_groove_offset, shaft_dia)
+    driven_axle = add_groove_to_axle(driven_axle, local_driven_gear_z + bevel_groove_offset, shaft_dia)
+    # Rotate so D-flat face lies on print bed
+    driven_axle = driven_axle.rotate((0, 0, 0), (1, 0, 0), -90)
+    parts.append(("driven_bevel_axle", driven_axle, driven_axle_length))
+
+    # --- C-Clips (14: 2 per axle × 5 + 2 inner core + 2 spares) ---
+    # Export as separate STL to avoid mesh issues in the combined layout compound
+    groove_dia = shaft_dia - 2 * 0.75  # 4.5mm for 6mm shaft
+    clip = make_c_clip(groove_diameter=groove_dia, clip_od=10.0, thickness=1.5, gap_angle=120.0)
+    clip_size = 10.0
+    for i in range(14):
+        parts.append((f"c_clip_{i+1:02d}", clip, clip_size))
 
     return parts
 
@@ -156,7 +239,7 @@ def layout_parts(parts: list, spacing: float = 10.0) -> cq.Assembly:
     x_cursor = 0.0
     y_cursor = 0.0
     row_height = 0.0
-    max_row_width = 400.0  # Start new row after this X extent
+    max_row_width = 256.0  # Printer plate size
 
     for name, shape, approx_size in parts:
         # Get actual bounding box
@@ -192,7 +275,7 @@ def main():
     parser.add_argument("-s", "--spec", type=Path,
                         default=Path("examples/mux_2to1.yaml"))
     parser.add_argument("-o", "--output", type=Path,
-                        default=Path("mux_print_layout.step"))
+                        default=Path("mux_print_layout.stl"))
     args = parser.parse_args()
 
     print(f"Loading spec from {args.spec}...")
@@ -208,9 +291,41 @@ def main():
 
     assy = layout_parts(parts)
 
+    # Report total layout footprint
+    total_bb = assy.toCompound().BoundingBox()
+    plate_x = total_bb.xmax - total_bb.xmin
+    plate_y = total_bb.ymax - total_bb.ymin
+    print(f"Layout footprint: {plate_x:.1f} x {plate_y:.1f} mm")
+    if plate_x > 256 or plate_y > 256:
+        print(f"  WARNING: exceeds 256x256 mm plate!")
+
+    # Split parts into main parts and c-clips for separate export
+    main_parts = [(n, s, sz) for n, s, sz in parts if not n.startswith("c_clip")]
+    clip_parts = [(n, s, sz) for n, s, sz in parts if n.startswith("c_clip")]
+
     print(f"Exporting to {args.output}...")
-    assy.save(str(args.output))
-    print(f"Done! {len(parts)} parts laid out for printing.")
+    output = args.output
+
+    # Export main layout
+    main_assy = layout_parts(main_parts)
+    if output.suffix == '.stl':
+        compound = main_assy.toCompound()
+        cq.exporters.export(compound, str(output), tolerance=0.01, angularTolerance=0.1)
+    else:
+        main_assy.save(str(output))
+
+    # Export c-clips as a separate file (avoids mesh issues in combined compound)
+    if clip_parts:
+        clip_assy = layout_parts(clip_parts)
+        clip_output = output.with_stem(output.stem + "_c_clips")
+        if clip_output.suffix == '.stl':
+            clip_compound = clip_assy.toCompound()
+            cq.exporters.export(clip_compound, str(clip_output), tolerance=0.005, angularTolerance=0.05)
+        else:
+            clip_assy.save(str(clip_output))
+        print(f"  C-clips exported separately to {clip_output}")
+
+    print(f"Done! {len(main_parts)} main parts + {len(clip_parts)} c-clips.")
 
 
 if __name__ == "__main__":

@@ -87,6 +87,9 @@ class ToleranceSpec(BaseModel):
     press_fit_interference: float = Field(
         default=-0.1, le=0, description="Interference for press fits in mm (negative)"
     )
+    d_flat_depth: float = Field(
+        default=1.0, gt=0, description="Depth of D-flat chord cut on shafts/bores in mm"
+    )
 
 
 class LogicElementSpec(BaseModel):

@@ -6,7 +6,7 @@ element:
   name: "mux_2to1"
   type: "mux"
 
-shaft_diameter: 2.0  # Primary shaft/axle diameter for all shafts
+shaft_diameter: 6.0  # Primary shaft/axle diameter for all shafts
 
 inputs:
   a: {}
@@ -45,3 +45,4 @@ tolerances:
   shaft_clearance: 0.2
   gear_backlash: 0.15
   press_fit_interference: -0.1
+  d_flat_depth: 1.0

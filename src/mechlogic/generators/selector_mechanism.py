@@ -17,7 +17,7 @@ from ..models.geometry import PartPlacement, PartMetadata, PartType
 from .gear_spur import SpurGearGenerator
 from .dog_clutch import DogClutchGenerator
 from .layout import LayoutCalculator, SelectorLayout, HousingLayout
-from .lower_housing import LowerHousingParams
+from .axle_profile import make_d_flat_axle, add_groove_to_axle
 
 
 class SelectorMechanismGenerator:
@@ -30,13 +30,16 @@ class SelectorMechanismGenerator:
     to add the shift control mechanism (bevel gears + lever).
     """
 
-    def __init__(self, include_axle: bool = True):
+    def __init__(self, include_axle: bool = True, two_piece_clutch: bool = True):
         """Initialize the selector mechanism generator.
 
         Args:
             include_axle: Whether to include the selector axle.
+            two_piece_clutch: If True, generate a two-piece dog clutch
+                (inner core slides on axle, retained by C-clips + outer sleeve).
         """
         self.include_axle = include_axle
+        self.two_piece_clutch = two_piece_clutch
 
     def generate(self, spec: LogicElementSpec, placement: PartPlacement) -> cq.Assembly:
         """Generate a selector mechanism assembly.
@@ -79,11 +82,9 @@ class SelectorMechanismGenerator:
 
         placement_a = PartPlacement(part_type=PartType.GEAR_A, part_id="gear_a")
         placement_b = PartPlacement(part_type=PartType.GEAR_B, part_id="gear_b")
-        placement_clutch = PartPlacement(part_type=PartType.DOG_CLUTCH, part_id="dog_clutch")
 
         gear_a = gear_a_gen.generate(spec, placement_a)
         gear_b = gear_b_gen.generate(spec, placement_b)
-        dog_clutch = clutch_gen.generate(spec, placement_clutch)
 
         # Add components (rotated so axle is along X)
         gear_a_rotated = gear_a.rotate((0, 0, 0), (0, 1, 0), 90)
@@ -102,13 +103,34 @@ class SelectorMechanismGenerator:
             color=cq.Color("darkorange"),
         )
 
-        clutch_rotated = dog_clutch.rotate((0, 0, 0), (0, 1, 0), 90)
-        assy.add(
-            clutch_rotated,
-            name=f"{name_prefix}dog_clutch" if name_prefix else "dog_clutch",
-            loc=cq.Location(cq.Vector(ox + layout.clutch_center, oy, oz)),
-            color=cq.Color("forestgreen"),
-        )
+        if self.two_piece_clutch:
+            inner_core = clutch_gen.generate_inner_core(spec)
+            inner_core_rotated = inner_core.rotate((0, 0, 0), (0, 1, 0), 90)
+            assy.add(
+                inner_core_rotated,
+                name=f"{name_prefix}clutch_inner_core" if name_prefix else "clutch_inner_core",
+                loc=cq.Location(cq.Vector(ox + layout.clutch_center, oy, oz)),
+                color=cq.Color("forestgreen"),
+            )
+
+            outer_sleeve = clutch_gen.generate_outer_sleeve(spec)
+            outer_sleeve_rotated = outer_sleeve.rotate((0, 0, 0), (0, 1, 0), 90)
+            assy.add(
+                outer_sleeve_rotated,
+                name=f"{name_prefix}clutch_outer_sleeve" if name_prefix else "clutch_outer_sleeve",
+                loc=cq.Location(cq.Vector(ox + layout.clutch_center, oy, oz)),
+                color=cq.Color("limegreen"),
+            )
+        else:
+            placement_clutch = PartPlacement(part_type=PartType.DOG_CLUTCH, part_id="dog_clutch")
+            dog_clutch = clutch_gen.generate(spec, placement_clutch)
+            clutch_rotated = dog_clutch.rotate((0, 0, 0), (0, 1, 0), 90)
+            assy.add(
+                clutch_rotated,
+                name=f"{name_prefix}dog_clutch" if name_prefix else "dog_clutch",
+                loc=cq.Location(cq.Vector(ox + layout.clutch_center, oy, oz)),
+                color=cq.Color("forestgreen"),
+            )
 
         if self.include_axle:
             self._add_axle(assy, spec, layout, origin, name_prefix)
@@ -123,30 +145,41 @@ class SelectorMechanismGenerator:
     ) -> None:
         """Add the selector axle to the assembly.
 
-        The selector axle is recessed on the left (flexure) side, terminating
-        inside a bearing pocket. On the right side, it extends through the
-        housing wall for insertion access, but doesn't project past the outer face.
+        The selector axle is a D-flat profile along its full length.
+        C-clips provide axial retention for gears.
         """
         ox, oy, oz = origin
+        d_flat_depth = spec.tolerances.d_flat_depth
+        shaft_dia = layout.shaft_diameter
 
-        # Get bearing pocket positions from lower housing params
-        lower_params = LowerHousingParams.from_spec(spec)
-        left_inner_face = lower_params.left_plate_x + lower_params.plate_thickness / 2
-        right_outer_face = lower_params.right_plate_x + lower_params.plate_thickness / 2
+        # Selector axle extends through both plates with overhang (same as input axles)
+        housing_layout = LayoutCalculator.calculate_housing_layout(spec)
+        axle_start = ox + housing_layout.axle_start_x
+        axle_length = housing_layout.axle_length
 
-        # Left side: terminates inside bearing pocket
-        # Right side: extends to outer face (through-hole for insertion)
-        axle_start = ox + left_inner_face - lower_params.selector_bearing_pocket_depth
-        axle_end = ox + right_outer_face  # Flush with right plate outer face
-        axle_length = axle_end - axle_start
+        # Build D-flat axle along X
+        axle = make_d_flat_axle(shaft_dia, axle_length, d_flat_depth)
+        axle = axle.translate((axle_start, oy, oz))
 
-        axle = (
-            cq.Workplane('YZ')
-            .center(oy, oz)
-            .circle(layout.shaft_diameter / 2)
-            .extrude(axle_length)
-            .translate((axle_start, 0, 0))
-        )
+        # Add C-clip retention grooves outboard of each gear
+        # Groove just left of gear A
+        groove_offset = 1.0  # mm from gear edge
+        groove_x_left = ox + layout.gear_a_center - groove_offset
+        axle = add_groove_to_axle(axle, groove_x_left, shaft_dia)
+
+        # Groove just right of gear B
+        groove_x_right = ox + layout.gear_b_center + layout.face_width + groove_offset
+        axle = add_groove_to_axle(axle, groove_x_right, shaft_dia)
+
+        if self.two_piece_clutch:
+            # C-clip grooves flanking the inner core for axial retention
+            clutch_width = spec.geometry.clutch_width
+            core_length = clutch_width + 2 * layout.engagement_travel + 2.0
+            core_groove_left = ox + layout.clutch_center - core_length / 2 - 1.0
+            core_groove_right = ox + layout.clutch_center + core_length / 2 + 1.0
+            axle = add_groove_to_axle(axle, core_groove_left, shaft_dia)
+            axle = add_groove_to_axle(axle, core_groove_right, shaft_dia)
+
         assy.add(
             axle,
             name=f"{name_prefix}selector_axle" if name_prefix else "selector_axle",

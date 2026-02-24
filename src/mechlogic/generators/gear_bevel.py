@@ -14,6 +14,7 @@ from cq_gears import BevelGear
 
 from ..models.spec import LogicElementSpec
 from ..models.geometry import PartPlacement, PartMetadata, PartType
+from .axle_profile import add_d_flat_to_bore
 
 
 class BevelGearGenerator:
@@ -46,48 +47,24 @@ class BevelGearGenerator:
         hub_outer_radius = bore_radius + 3.0  # Wall thickness around bore
 
         # Create bevel gear using cq_gears
-        # Use a tiny bore that we'll enlarge to go through the hub
         gear_obj = BevelGear(
             module=module,
             teeth_number=teeth,
             cone_angle=cone_angle,
             face_width=face_width,
-            bore_d=0.1,  # Minimal bore - we'll cut proper one through hub
+            bore_d=bore_dia,
         )
 
         # Build the gear body
         gear = cq.Workplane('XY').gear(gear_obj)
 
-        # Add hub extending backward (negative Z) from the gear back face
-        # The gear is built with back face at Z=0
-        hub = (
-            cq.Workplane('XY')
-            .circle(hub_outer_radius)
-            .extrude(-hub_height)
-        )
-        gear = gear.union(hub)
-
-        # Cut bore through entire gear + hub
-        bore = (
-            cq.Workplane('XY')
-            .workplane(offset=-hub_height - 1)
-            .circle(bore_radius)
-            .extrude(face_width + hub_height + 10)
-        )
-        gear = gear.cut(bore)
-
-        # Add M3 set screw hole in hub (radial hole perpendicular to axis)
-        # M3 tap drill = 2.5mm, positioned at middle of hub
-        set_screw_dia = 2.5  # M3 tap drill size
-        set_screw_z = -hub_height / 2  # Middle of hub
-        set_screw_hole = (
-            cq.Workplane('XZ')
-            .workplane(offset=0)  # Y=0 plane
-            .center(0, set_screw_z)  # Position at hub center height
-            .circle(set_screw_dia / 2)
-            .extrude(hub_outer_radius + 1)  # Through the hub wall
-        )
-        gear = gear.cut(set_screw_hole)
+        # Add D-flat fill to bore for rotation lock
+        # cq_gears BevelGear body starts at Z=0; center the fill on the gear body
+        d_flat_depth = spec.tolerances.d_flat_depth
+        gear_bb = gear.val().BoundingBox()
+        bore_center_z = (gear_bb.zmin + gear_bb.zmax) / 2
+        bore_length = gear_bb.zmax - gear_bb.zmin
+        gear = add_d_flat_to_bore(gear, bore_dia, d_flat_depth, bore_length, z_offset=bore_center_z)
 
         return gear
 

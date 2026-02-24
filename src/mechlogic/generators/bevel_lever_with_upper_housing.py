@@ -14,8 +14,10 @@ import cadquery as cq
 from ..models.spec import LogicElementSpec
 from ..models.geometry import PartPlacement, PartMetadata, PartType
 from .bevel_lever import BevelLeverGenerator
-from .layout import LayoutCalculator
+from .gear_bevel import BevelGearGenerator
+from .layout import LayoutCalculator, SplitSnapParams
 from .serpentine_flexure import SerpentineFlexureGenerator, SerpentineFlexureParams
+from .axle_profile import make_d_flat_axle, make_d_flat_axle_along_z, add_groove_to_axle, add_groove_to_axle_z
 
 
 class BevelLeverWithUpperHousingGenerator:
@@ -148,10 +150,10 @@ class BevelLeverWithUpperHousingGenerator:
 
         # Dimensions from spec
         shaft_diameter = spec.primary_shaft_diameter
-        axle_clearance = 0.2  # Clearance for rotation
+        axle_clearance = 0.3  # Clearance for rotation
         hole_diameter = shaft_diameter + axle_clearance * 2
 
-        wall_thickness = spec.geometry.housing_thickness
+        wall_thickness = max(spec.geometry.housing_thickness, 6.0)
 
         # Bevel gear clearance (still needed for Z calculations)
         bevel_gear_radius = 10.0  # Approximate gear body radius
@@ -270,102 +272,229 @@ class BevelLeverWithUpperHousingGenerator:
         else:
             flexure_mount_holes = None
 
-        # Create left wall (YZ plane) with hole for driving bevel axle
-        # Left wall Z extent should match outer faces of front/back walls for flush fit
-        # Front wall is centered on front_wall_z, so its front face is at front_wall_z - thickness/2
-        # Back wall is centered on back_wall_z, so its back face is at back_wall_z + thickness/2
-        # When flexure is used, pass inner cavity size for large rectangular opening
-        inner_cavity_size = None
-        if self.include_flexure:
-            # inner_width → Z, inner_height → Y (after 90° rotation)
-            inner_cavity_size = (self._flexure_inner_height, self._flexure_inner_width)
+        # Build upper housing as a single solid box-frame to guarantee one piece.
+        # Outer and inner bounds of the frame:
+        outer_x_min = left_wall_x - wall_thickness / 2
+        outer_x_max = right_edge_x  # = right_wall_x + wall_thickness / 2
+        outer_z_min = front_wall_z - wall_thickness / 2
+        outer_z_max = back_wall_z + wall_thickness / 2
 
-        # Left/right walls extend down to lower housing when enabled
-        left_right_y_min = extension_y_min if self.extend_to_lower_housing else wall_bottom_y
+        inner_x_min = left_wall_x + wall_thickness / 2
+        inner_x_max = right_wall_x - wall_thickness / 2
+        inner_z_min = front_wall_z + wall_thickness / 2
+        inner_z_max = back_wall_z - wall_thickness / 2
 
-        left_wall = self._make_left_wall(
-            wall_x=left_wall_x,
-            y_min=left_right_y_min,
-            y_max=wall_top_y,
-            z_min=front_wall_z - wall_thickness / 2,  # Flush with front face of front wall
-            z_max=back_wall_z + wall_thickness / 2,   # Flush with back face of back wall
-            thickness=wall_thickness,
-            hole_y=oy + pivot_y,
-            hole_z=oz,
-            hole_diameter=hole_diameter,
-            mounting_holes=flexure_mount_holes,
-            inner_cavity_size=inner_cavity_size,
+        main_h = wall_top_y - wall_bottom_y
+
+        # Step 1: Create main frame (box with interior cut out)
+        outer_box = (
+            cq.Workplane('XY')
+            .box(outer_x_max - outer_x_min, main_h, outer_z_max - outer_z_min,
+                 centered=False)
+            .translate((outer_x_min, wall_bottom_y, outer_z_min))
         )
+        inner_cut = (
+            cq.Workplane('XY')
+            .box(inner_x_max - inner_x_min, main_h + 2, inner_z_max - inner_z_min,
+                 centered=False)
+            .translate((inner_x_min, wall_bottom_y - 1, inner_z_min))
+        )
+        result = outer_box.cut(inner_cut)
 
-        # Create front wall (XY plane) with hole for driven bevel axle
-        # Front/back walls X extent should start at left wall's left face for flush fit
-        # Left wall is centered on left_wall_x, so its left face is at left_wall_x - thickness/2
-        if self.extend_to_lower_housing and self.l_shaped_front_back:
-            # Option B: L-shaped front/back walls with outer sections extending down
-            outer_section_width = 10.0  # Width of outer sections that extend down
-            front_wall = self._make_front_back_wall_l_shaped(
-                wall_z=front_wall_z,
-                x_min=left_wall_x - wall_thickness / 2,
-                x_max=right_edge_x,
-                y_upper=wall_top_y,
-                y_mid=wall_bottom_y,
-                y_lower=extension_y_min,
-                thickness=wall_thickness,
-                outer_section_width=outer_section_width,
-                hole_x=ox,
-                hole_y=oy + pivot_y,
-                hole_diameter=hole_diameter,
+        # Step 2: Add left/right wall extensions below main frame if needed
+        if self.extend_to_lower_housing and extension_y_min < wall_bottom_y:
+            ext_h = wall_bottom_y - extension_y_min
+            frame_depth = outer_z_max - outer_z_min
+
+            left_ext = (
+                cq.Workplane('XY')
+                .box(wall_thickness, ext_h, frame_depth, centered=False)
+                .translate((outer_x_min, extension_y_min, outer_z_min))
             )
-            back_wall = self._make_front_back_wall_l_shaped(
-                wall_z=back_wall_z,
-                x_min=left_wall_x - wall_thickness / 2,
-                x_max=right_edge_x,
-                y_upper=wall_top_y,
-                y_mid=wall_bottom_y,
-                y_lower=extension_y_min,
-                thickness=wall_thickness,
-                outer_section_width=outer_section_width,
-                hole_x=ox,
-                hole_y=oy + pivot_y,
-                hole_diameter=hole_diameter,
+            right_ext = (
+                cq.Workplane('XY')
+                .box(wall_thickness, ext_h, frame_depth, centered=False)
+                .translate((outer_x_max - wall_thickness, extension_y_min, outer_z_min))
+            )
+            result = result.union(left_ext).union(right_ext)
+
+            # L-shaped front/back extensions (outer sections only)
+            if self.l_shaped_front_back:
+                outer_section_width = 10.0
+                for wall_z in [front_wall_z, back_wall_z]:
+                    # Left outer section
+                    left_fb = (
+                        cq.Workplane('XY')
+                        .box(outer_section_width, ext_h, wall_thickness,
+                             centered=False)
+                        .translate((outer_x_min, extension_y_min,
+                                    wall_z - wall_thickness / 2))
+                    )
+                    # Right outer section
+                    right_fb = (
+                        cq.Workplane('XY')
+                        .box(outer_section_width, ext_h, wall_thickness,
+                             centered=False)
+                        .translate((outer_x_max - outer_section_width,
+                                    extension_y_min,
+                                    wall_z - wall_thickness / 2))
+                    )
+                    result = result.union(left_fb).union(right_fb)
+
+        # Step 3: Cut axle holes
+
+        # Driving bevel axle in left wall (along X axis)
+        if self.include_flexure:
+            # Flexure provides axle support - cut large rectangular opening
+            rect_height = self._flexure_inner_height  # Y dimension
+            rect_width = self._flexure_inner_width    # Z dimension
+            opening = (
+                cq.Workplane('YZ')
+                .center(oy + pivot_y, oz)
+                .rect(rect_height, rect_width)
+                .extrude(wall_thickness + 2)
+                .translate((left_wall_x - wall_thickness / 2 - 1, 0, 0))
             )
         else:
-            front_wall = self._make_front_back_wall(
-                wall_z=front_wall_z,
-                x_min=left_wall_x - wall_thickness / 2,  # Flush with left face of left wall
-                x_max=right_edge_x,
-                y_min=wall_bottom_y,
-                y_max=wall_top_y,
-                thickness=wall_thickness,
-                hole_x=ox,
-                hole_y=oy + pivot_y,
-                hole_diameter=hole_diameter,
+            opening = (
+                cq.Workplane('YZ')
+                .center(oy + pivot_y, oz)
+                .circle(hole_diameter / 2)
+                .extrude(wall_thickness + 2)
+                .translate((left_wall_x - wall_thickness / 2 - 1, 0, 0))
             )
-            back_wall = self._make_front_back_wall(
-                wall_z=back_wall_z,
-                x_min=left_wall_x - wall_thickness / 2,  # Flush with left face of left wall
-                x_max=right_edge_x,
-                y_min=wall_bottom_y,
-                y_max=wall_top_y,
-                thickness=wall_thickness,
-                hole_x=ox,
-                hole_y=oy + pivot_y,
-                hole_diameter=hole_diameter,
+        result = result.cut(opening)
+
+        # Flexure mounting holes in left wall (M2 clearance)
+        if self.include_flexure and flexure_mount_holes:
+            mounting_hole_dia = 2.2
+            for mount_y, mount_z in flexure_mount_holes:
+                mount_hole = (
+                    cq.Workplane('YZ')
+                    .center(mount_y, mount_z)
+                    .circle(mounting_hole_dia / 2)
+                    .extrude(wall_thickness + 2)
+                    .translate((left_wall_x - wall_thickness / 2 - 1, 0, 0))
+                )
+                result = result.cut(mount_hole)
+
+        # Driven bevel axle in front and back walls (along Z axis)
+        for wall_z in [front_wall_z, back_wall_z]:
+            axle_hole = (
+                cq.Workplane('XY')
+                .center(ox, oy + pivot_y)
+                .circle(hole_diameter / 2)
+                .extrude(wall_thickness + 2)
+                .translate((0, 0, wall_z - wall_thickness / 2 - 1))
             )
+            result = result.cut(axle_hole)
 
-        # Create right wall (YZ plane) - no hole needed, just structural
-        right_wall = self._make_right_wall(
-            wall_x=right_wall_x,
-            y_min=left_right_y_min,
-            y_max=wall_top_y,
-            z_min=front_wall_z - wall_thickness / 2,  # Flush with front face of front wall
-            z_max=back_wall_z + wall_thickness / 2,   # Flush with back face of back wall
-            thickness=wall_thickness,
-        )
+        # Step 4: Add connection flanges for bolting to lower housing
+        conn = LayoutCalculator.calculate_connection_layout(spec)
+        z_overlap = 2.0  # Overlap into frame to ensure solid union
+        for bx, bz in conn.bolt_positions:
+            # Determine overlap direction (extend tab into frame)
+            if bz < 0:  # Front bolt - extend in +Z into frame
+                tab_z_start = bz - conn.flange_depth / 2
+                tab_z_size = conn.flange_depth + z_overlap
+            else:  # Back bolt - extend in -Z into frame
+                tab_z_start = bz - conn.flange_depth / 2 - z_overlap
+                tab_z_size = conn.flange_depth + z_overlap
 
-        result = left_wall.union(front_wall).union(back_wall).union(right_wall)
+            # Flange tab extending outward in Z from the frame
+            tab = (
+                cq.Workplane('XY')
+                .box(conn.flange_width, conn.flange_height,
+                     tab_z_size, centered=False)
+                .translate((
+                    bx - conn.flange_width / 2,
+                    conn.mating_y,
+                    tab_z_start,
+                ))
+            )
+            result = result.union(tab)
+
+            # M3 through-hole (Y-axis) from top of wall through the flange
+            hole_height = wall_top_y - conn.mating_y + 2
+            bolt_hole = (
+                cq.Workplane('XY')
+                .circle(conn.bolt_diameter / 2)
+                .extrude(hole_height)
+                .rotate((0, 0, 0), (1, 0, 0), -90)
+                .translate((bx, conn.mating_y - 1, bz))
+            )
+            result = result.cut(bolt_hole)
 
         return result
+
+    def generate_split_upper_housing(
+        self,
+        spec: LogicElementSpec,
+        origin: tuple[float, float, float],
+        split_x: float = None,
+        snap: SplitSnapParams = None,
+    ) -> tuple[cq.Workplane, cq.Workplane]:
+        """Generate upper housing split into left and right halves.
+
+        Generates the full upper housing, cuts at split_x, then adds
+        tongue-and-groove snap features to the front/back wall cut faces.
+
+        The default split_x is offset from the housing midpoint to avoid
+        the driven bevel axle holes in the front/back walls.
+
+        Args:
+            spec: The logic element specification.
+            origin: The (x, y, z) origin point (at clutch axis).
+            split_x: X coordinate of split plane. Defaults to offset that
+                     clears the driven axle hole.
+            snap: Snap feature parameters.
+
+        Returns:
+            Tuple of (left_half, right_half).
+        """
+        if snap is None:
+            snap = SplitSnapParams()
+        if split_x is None:
+            # Offset to avoid the driven bevel axle hole at clutch_center (X=30).
+            # Place split at midpoint between left wall inner face and axle hole.
+            selector = LayoutCalculator.calculate_selector_layout(spec)
+            housing = LayoutCalculator.calculate_housing_layout(spec)
+            left_inner = housing.left_plate_x + housing.plate_thickness / 2
+            axle_clearance = 0.3
+            hole_radius = (spec.primary_shaft_diameter + 2 * axle_clearance) / 2
+            axle_left_edge = selector.clutch_center - hole_radius
+            split_x = (left_inner + axle_left_edge) / 2
+
+        # Generate full upper housing
+        housing = self._generate_upper_housing(spec, origin)
+
+        # Reuse the cut helper from lower housing
+        from .lower_housing import LowerHousingGenerator
+        left_half = LowerHousingGenerator._cut_half(housing, split_x, keep_left=True)
+        right_half = LowerHousingGenerator._cut_half(housing, split_x, keep_left=False)
+
+        # Get front/back wall Z positions and Y bounds from stored wall positions
+        wp = self._wall_positions
+        wall_z_positions = [wp['front_wall_z'], wp['back_wall_z']]
+        wall_thickness = wp['wall_thickness']
+
+        # Use main frame Y bounds for tongue/groove (not extensions or flanges)
+        wall_y_min = wp['wall_bottom_y']
+        wall_y_max = wp['wall_top_y']
+
+        # Upper housing uses narrower tongue (4mm walls vs 6mm lower)
+        left_half = LowerHousingGenerator._add_snap_tongues(
+            left_half, split_x, wall_z_positions, snap,
+            wall_thickness, snap.tongue_width_upper,
+            wall_y_min=wall_y_min, wall_y_max=wall_y_max,
+        )
+        right_half = LowerHousingGenerator._add_snap_grooves(
+            right_half, split_x, wall_z_positions, snap,
+            wall_thickness, snap.tongue_width_upper,
+            wall_y_min=wall_y_min, wall_y_max=wall_y_max,
+        )
+
+        return left_half, right_half
 
     def _make_left_wall(
         self,
@@ -599,7 +728,7 @@ class BevelLeverWithUpperHousingGenerator:
         origin: tuple[float, float, float],
         name_prefix: str,
     ) -> None:
-        """Add bevel gear axles that extend through housing walls.
+        """Add D-flat bevel gear axles that extend through housing walls.
 
         Axles extend past the outer housing walls by axle_overhang.
         """
@@ -607,6 +736,7 @@ class BevelLeverWithUpperHousingGenerator:
         housing_layout = LayoutCalculator.calculate_housing_layout(spec)
 
         shaft_diameter = spec.primary_shaft_diameter
+        d_flat_depth = spec.tolerances.d_flat_depth
         axle_overhang = housing_layout.axle_overhang
 
         # Get wall positions from housing generation
@@ -618,24 +748,26 @@ class BevelLeverWithUpperHousingGenerator:
         driving_z = wp['driving_axle_z']
         left_wall_x = wp['left_wall_x']
 
-        # Axle starts at left wall outer edge minus overhang
-        # Axle must end BEFORE the lever pivot block (which extends from X=-6 to X=+6)
-        # The driving bevel gear is at X = -bevel_mesh_distance, axle should end just past the gear
         driving_axle_start = left_wall_x - wall_thickness / 2 - axle_overhang
         bevel_layout = LayoutCalculator.calculate_bevel_layout(spec)
         driving_gear_x = ox - bevel_layout.mesh_distance
-        lever_clearance = 2.0  # Clearance from lever pivot block
-        lever_left_edge = ox - 6.0  # Lever pivot block extends from X=-6 to X=+6
+        lever_clearance = 2.0
+        lever_left_edge = ox - 6.0
         driving_axle_end = min(driving_gear_x + 8, lever_left_edge - lever_clearance)
         driving_axle_length = driving_axle_end - driving_axle_start
 
-        driving_axle = (
-            cq.Workplane('YZ')
-            .center(driving_y, driving_z)
-            .circle(shaft_diameter / 2)
-            .extrude(driving_axle_length)
-            .translate((driving_axle_start, 0, 0))
-        )
+        # Build D-flat axle along X, then translate to position
+        driving_axle = make_d_flat_axle(shaft_diameter, driving_axle_length, d_flat_depth)
+        driving_axle = driving_axle.translate((driving_axle_start, driving_y, driving_z))
+
+        # Add C-clip retention grooves flanking the driving bevel gear
+        bevel_face_width = BevelGearGenerator(gear_id="driving").get_face_width(spec)
+        groove_offset = bevel_face_width + 1.0
+        axle = driving_axle
+        axle = add_groove_to_axle(axle, driving_gear_x - groove_offset, shaft_diameter)
+        axle = add_groove_to_axle(axle, driving_gear_x + groove_offset, shaft_diameter)
+        driving_axle = axle
+
         assy.add(
             driving_axle,
             name=f"{name_prefix}driving_bevel_axle" if name_prefix else "driving_bevel_axle",
@@ -643,23 +775,28 @@ class BevelLeverWithUpperHousingGenerator:
         )
 
         # Driven bevel axle: runs along Z at (X=0, Y=pivot_y)
+        # Axle must extend past connection flanges (not just walls) + overhang
         driven_x = wp['driven_axle_x']
         driven_y = wp['pivot_y']
         front_wall_z = wp['front_wall_z']
         back_wall_z = wp['back_wall_z']
+        conn = LayoutCalculator.calculate_connection_layout(spec)
 
-        # Axle extends from front wall (minus overhang) to back wall (plus overhang)
-        driven_axle_start = front_wall_z - wall_thickness / 2 - axle_overhang
-        driven_axle_end = back_wall_z + wall_thickness / 2 + axle_overhang
+        driven_axle_start = front_wall_z - wall_thickness / 2 - conn.flange_depth - axle_overhang
+        driven_axle_end = back_wall_z + wall_thickness / 2 + conn.flange_depth + axle_overhang
         driven_axle_length = driven_axle_end - driven_axle_start
 
-        driven_axle = (
-            cq.Workplane('XY')
-            .center(driven_x, driven_y)
-            .circle(shaft_diameter / 2)
-            .extrude(driven_axle_length)
-            .translate((0, 0, driven_axle_start))
+        # Build D-flat axle along Z, then translate to position
+        driven_axle = make_d_flat_axle_along_z(
+            shaft_diameter, driven_axle_length, d_flat_depth, z_start=driven_axle_start,
         )
+        driven_axle = driven_axle.translate((driven_x, driven_y, 0))
+
+        # Add C-clip retention grooves flanking the driven bevel gear
+        driven_gear_z = oz - bevel_layout.mesh_distance
+        driven_axle = add_groove_to_axle_z(driven_axle, driven_gear_z - groove_offset, shaft_diameter)
+        driven_axle = add_groove_to_axle_z(driven_axle, driven_gear_z + groove_offset, shaft_diameter)
+
         assy.add(
             driven_axle,
             name=f"{name_prefix}driven_bevel_axle" if name_prefix else "driven_bevel_axle",

@@ -31,6 +31,7 @@ class MuxAssemblyGenerator:
         housing_transparent: bool = True,
         include_upper_housing: bool = True,
         include_flexure: bool = True,
+        split_housing: bool = False,
     ):
         """Initialize the mux assembly generator.
 
@@ -39,11 +40,13 @@ class MuxAssemblyGenerator:
             housing_transparent: Whether to render housing semi-transparent.
             include_upper_housing: Whether to include upper housing (bevel housing).
             include_flexure: Whether to include serpentine flexure on upper housing.
+            split_housing: Whether to split housings into left/right halves.
         """
         self.include_housing = include_housing
         self.housing_transparent = housing_transparent
         self.include_upper_housing = include_upper_housing
         self.include_flexure = include_flexure
+        self.split_housing = split_housing
 
     def generate(self, spec: LogicElementSpec, placement: PartPlacement) -> cq.Assembly:
         """Generate the complete mux assembly.
@@ -66,7 +69,9 @@ class MuxAssemblyGenerator:
             self._add_upper_housing(assy, spec)
 
         # Add the complete mux selector mechanism
-        mux_gen = MuxSelectorGenerator(include_axles=True)
+        # Bevel axles come from BevelLeverWithUpperHousingGenerator (properly sized
+        # with D-flat profiles and retention grooves), not BevelLeverGenerator
+        mux_gen = MuxSelectorGenerator(include_axles=True, include_bevel_axles=False)
         mux_gen.add_to_assembly(assy, spec, origin=(0, 0, 0))
 
         return assy
@@ -74,14 +79,22 @@ class MuxAssemblyGenerator:
     def _add_lower_housing(self, assy: cq.Assembly, spec: LogicElementSpec) -> None:
         """Add lower housing enclosure to the assembly."""
         housing_gen = LowerHousingGenerator(spec=spec)
-        side_plates, front_back_walls = housing_gen.generate()
 
-        if self.housing_transparent:
-            assy.add(side_plates, name="housing_side_plates", color=cq.Color(0.7, 0.7, 0.7, 0.3))
-            assy.add(front_back_walls, name="housing_front_back", color=cq.Color(0.6, 0.6, 0.6, 0.3))
+        if self.split_housing:
+            left_half, right_half = housing_gen.generate_split()
+            alpha = 0.3 if self.housing_transparent else 1.0
+            assy.add(left_half, name="lower_housing_left",
+                     color=cq.Color(0.7, 0.7, 0.7, alpha))
+            assy.add(right_half, name="lower_housing_right",
+                     color=cq.Color(0.6, 0.6, 0.6, alpha))
         else:
-            assy.add(side_plates, name="housing_side_plates", color=cq.Color(0.75, 0.75, 0.75))
-            assy.add(front_back_walls, name="housing_front_back", color=cq.Color(0.5, 0.5, 0.5))
+            side_plates, front_back_walls = housing_gen.generate()
+            if self.housing_transparent:
+                assy.add(side_plates, name="housing_side_plates", color=cq.Color(0.7, 0.7, 0.7, 0.3))
+                assy.add(front_back_walls, name="housing_front_back", color=cq.Color(0.6, 0.6, 0.6, 0.3))
+            else:
+                assy.add(side_plates, name="housing_side_plates", color=cq.Color(0.75, 0.75, 0.75))
+                assy.add(front_back_walls, name="housing_front_back", color=cq.Color(0.5, 0.5, 0.5))
 
     def _add_upper_housing(self, assy: cq.Assembly, spec: LogicElementSpec) -> None:
         """Add upper housing (bevel lever housing with flexure) to the assembly.
@@ -102,20 +115,29 @@ class MuxAssemblyGenerator:
         # Generate upper housing with or without flexure, with wall extension
         # Option A: Only left/right walls extend down (no L-shaped front/back)
         upper_housing_gen = BevelLeverWithUpperHousingGenerator(
-            include_axles=False,  # Axles are added by MuxSelectorGenerator
+            include_axles=True,  # Bevel axles with D-flat profiles and grooves
             include_flexure=self.include_flexure,
             extend_to_lower_housing=True,
             lower_housing_y_max=lower_housing_y_max,
             l_shaped_front_back=False,  # Option A: simpler wall extension
         )
 
-        # Generate housing walls
-        upper_housing = upper_housing_gen._generate_upper_housing(spec, origin)
-
-        if self.housing_transparent:
-            assy.add(upper_housing, name="upper_housing", color=cq.Color(0.7, 0.7, 0.7, 0.3))
+        if self.split_housing:
+            left_half, right_half = upper_housing_gen.generate_split_upper_housing(spec, origin)
+            alpha = 0.3 if self.housing_transparent else 1.0
+            assy.add(left_half, name="upper_housing_left",
+                     color=cq.Color(0.7, 0.7, 0.7, alpha))
+            assy.add(right_half, name="upper_housing_right",
+                     color=cq.Color(0.6, 0.6, 0.6, alpha))
         else:
-            assy.add(upper_housing, name="upper_housing", color=cq.Color(0.7, 0.7, 0.7))
+            upper_housing = upper_housing_gen._generate_upper_housing(spec, origin)
+            if self.housing_transparent:
+                assy.add(upper_housing, name="upper_housing", color=cq.Color(0.7, 0.7, 0.7, 0.3))
+            else:
+                assy.add(upper_housing, name="upper_housing", color=cq.Color(0.7, 0.7, 0.7))
+
+        # Add bevel axles (D-flat profiles with retention grooves)
+        upper_housing_gen._add_axles(assy, spec, origin, "")
 
         # Add flexure if enabled
         if self.include_flexure:

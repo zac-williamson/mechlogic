@@ -7,6 +7,7 @@ from cq_gears import SpurGear
 
 from ..models.spec import LogicElementSpec
 from ..models.geometry import PartPlacement, PartMetadata, PartType
+from .axle_profile import add_d_flat_to_bore
 
 
 class SpurGearGenerator:
@@ -19,13 +20,20 @@ class SpurGearGenerator:
     - Central bore for the axle
     """
 
-    def __init__(self, gear_id: str = "a"):
+    def __init__(self, gear_id: str = "a", free_spinning: bool = False, include_dog_teeth: bool = True):
         """Initialize generator.
 
         Args:
             gear_id: "a" or "b" to identify which coaxial gear
+            free_spinning: If True, use larger bore clearance (same as housing
+                axle holes) so the gear rotates freely on the axle. Used for
+                coaxial gears that couple via dog clutch, not friction fit.
+            include_dog_teeth: If True, add dog clutch teeth to one face.
+                Set False for plain input/meshing gears.
         """
         self.gear_id = gear_id
+        self.free_spinning = free_spinning
+        self.include_dog_teeth = include_dog_teeth
 
     def generate(self, spec: LogicElementSpec, placement: PartPlacement) -> cq.Workplane:
         """Generate a spur gear with inner dog teeth."""
@@ -34,15 +42,17 @@ class SpurGearGenerator:
         face_width = spec.geometry.gear_face_width
         shaft_dia = spec.primary_shaft_diameter
         clearance = spec.tolerances.shaft_clearance
+        d_flat_depth = spec.tolerances.d_flat_depth
         dog_spec = spec.gears.dog_clutch
 
         # Gear dimensions
         pitch_dia = module * teeth
-        bore_dia = shaft_dia + clearance
-
-        # Dog teeth ring dimensions (inner portion of gear)
-        dog_ring_od = pitch_dia * 0.35  # Inner ring for dog clutch
-        dog_ring_id = bore_dia + 4  # Leave wall around bore
+        if self.free_spinning:
+            # Match housing axle hole clearance (0.3mm per side)
+            axle_clearance = 0.3
+            bore_dia = shaft_dia + axle_clearance * 2
+        else:
+            bore_dia = shaft_dia + clearance
 
         # Create spur gear using cq_gears for proper involute teeth
         gear_obj = SpurGear(
@@ -55,15 +65,30 @@ class SpurGearGenerator:
         # Build the gear
         gear_profile = cq.Workplane('XY').gear(gear_obj)
 
+        # Add D-flat fill to bore for fixed (non-free-spinning) gears
+        # cq_gears SpurGear body spans Z=0 to Z=face_width, so center fill there
+        if not self.free_spinning:
+            gear_profile = add_d_flat_to_bore(
+                gear_profile, bore_dia, d_flat_depth, face_width,
+                z_offset=face_width / 2,
+            )
+
+        if not self.include_dog_teeth:
+            return gear_profile
+
         # Add internal dog teeth on the face facing the clutch
         # These are teeth that protrude from the gear face, with slots between them
         # The clutch teeth engage in the slots
         dog_tooth_count = dog_spec.teeth
         dog_tooth_height = dog_spec.tooth_height
 
-        # Internal ring dimensions - where the dog teeth are located
-        dog_ring_outer = pitch_dia * 0.4  # Outer radius of dog tooth ring
-        dog_ring_inner = bore_dia + 2  # Inner radius (clearance from bore)
+        # Dog ring dimensions: must share radial range with clutch teeth
+        # Inner: just clears the bore with 1.5mm wall
+        # Outer: matches clutch OD (gear_od * 0.4) for engagement
+        gear_od = pitch_dia + 2 * module
+        clutch_od = gear_od * 0.4
+        dog_ring_inner = bore_dia / 2 + 1.5  # Inner radius (clearance from bore)
+        dog_ring_outer = clutch_od / 2  # Outer radius matches clutch
 
         # Each tooth is a sector of the ring
         tooth_angle = 360.0 / dog_tooth_count  # Degrees per tooth+gap

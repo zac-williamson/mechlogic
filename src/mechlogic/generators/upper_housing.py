@@ -32,7 +32,7 @@ class UpperHousingParams:
 
     # Axle dimensions
     axle_diameter: float = 6.0
-    axle_clearance: float = 0.2  # Clearance for rotation (per side)
+    axle_clearance: float = 0.3  # Clearance for rotation (per side)
 
     # Plate dimensions
     plate_thickness: float = 6.0

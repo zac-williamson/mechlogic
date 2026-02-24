@@ -6,6 +6,7 @@ import cadquery as cq
 from ..models.spec import LogicElementSpec
 from ..models.geometry import PartPlacement, PartMetadata, PartType
 from .layout import LayoutCalculator
+from .axle_profile import make_d_flat_cylinder
 
 
 class ShiftLeverGenerator:
@@ -25,7 +26,7 @@ class ShiftLeverGenerator:
     def generate(self, spec: LogicElementSpec, placement: PartPlacement) -> cq.Workplane:
         """Generate a shift lever with fork for dog clutch engagement."""
         # Clutch dimensions
-        gear_od = spec.gears.module * spec.gears.coaxial_teeth
+        gear_od = spec.gears.module * spec.gears.coaxial_teeth + 2 * spec.gears.module
         clutch_od = gear_od * 0.4
 
         # Groove dimensions (must match dog_clutch.py)
@@ -41,8 +42,8 @@ class ShiftLeverGenerator:
 
         # Pivot block at top
         pivot_block_size = 12.0
-        pivot_hole_dia = 6.0
-        pivot_block_thickness = pivot_hole_dia * 2
+        pivot_hole_dia = spec.primary_shaft_diameter
+        pivot_block_thickness = 12
         # Use layout calculator for consistent pivot position across all components
         pivot_y = LayoutCalculator.calculate_pivot_y(spec)
 
@@ -62,14 +63,14 @@ class ShiftLeverGenerator:
             .translate((-pivot_block_thickness / 2, pivot_y, 0))
         )
 
-        # Cut pivot hole along Z axis using explicit cylinder subtraction
-        pivot_hole = (
-            cq.Workplane("XY")
-            .circle(pivot_hole_dia / 2)
-            .extrude(pivot_block_size * 2)
-            .translate((0, pivot_y, -pivot_block_size))
+        # Cut D-flat pivot hole along Z axis
+        d_flat_depth = spec.tolerances.d_flat_depth
+        pivot_hole_length = pivot_block_size * 2
+        d_flat_hole = (
+            make_d_flat_cylinder(pivot_hole_dia, pivot_hole_length, d_flat_depth)
+            .translate((0, pivot_y, 0))
         )
-        pivot_block = pivot_block.cut(pivot_hole)
+        pivot_block = pivot_block.cut(d_flat_hole)
 
         # Arm - connects pivot block to fork area
         arm_top = pivot_y - pivot_block_size / 2
@@ -125,7 +126,7 @@ class ShiftLeverGenerator:
             material="PLA",
             count=1,
             dimensions={
-                "pivot_hole_diameter": 6.0,
+                "pivot_hole_diameter": 1.9,
                 "lever_thickness": 3.5,
             },
         )
